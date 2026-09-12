@@ -37,6 +37,8 @@ claude/skills/      cadrer, livrer, etat, noeuds, largeur, demo → le noyau
 eval/*.py           les oracles, stdlib pure          → le noyau
 eval/schemas/run_contract.schema.json                 → le noyau
 eval/fixtures/      de quoi faire tourner la CI sans serveur → le noyau
+mac-ia/             routeur, pont Anthropic→OpenAI, brain : le LLM local
+                    → infrastructure : se lance d'ici, ne se pose nulle part
 
 modele/             ce qu'un projet copie UNE fois puis fait sien
   eval/golden_set.jsonl, tasks_golden.jsonl, baseline.json
@@ -45,6 +47,13 @@ modele/             ce qu'un projet copie UNE fois puis fait sien
 
 exemples/src/Horus.Tools/   « un outil est un type », en trois fichiers
 ```
+
+`mac-ia/` n'entre pas dans le noyau : c'est ce qu'on lance, pas ce qu'on
+copie. Trois usages, une couture chacune — les agents Claude Code du harnais
+et le `claude -p` de coachingia posent `ANTHROPIC_BASE_URL=http://192.168.1.50:1235`
+vers le pont ; le juge des évals (`eval/juge_local.py`) parle à LM Studio en
+`:1234` sans intermédiaire. `python3 mac-ia/router/profiles.py status` dit quel
+profil est résident. Voir `mac-ia/README.md`.
 
 **Le noyau se pose, le modèle se copie et s'oublie.** `installer` ne touche
 jamais au modèle une fois qu'il est chez vous : ce sont des étalons, et un
