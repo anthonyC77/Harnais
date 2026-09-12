@@ -2,7 +2,7 @@
 import http.server, json, os, shutil, socket, subprocess, sys, tempfile, threading, unittest
 HERE = os.path.dirname(os.path.abspath(__file__)); EVAL = os.path.dirname(HERE); PROJECT = os.path.dirname(EVAL)
 sys.path.insert(0, EVAL)
-import run_eval, run_tasks_eval, jsonschema_lite, check_tool_schemas  # noqa: E402
+import run_eval, run_tasks_eval, jsonschema_lite, check_tool_schemas, plier_evenements  # noqa: E402
 
 
 def _etalon(nom):
@@ -251,6 +251,64 @@ class SchemaLite(unittest.TestCase):
     def test_ref_non_local_refuse(self):
         with self.assertRaises(ValueError):
             jsonschema_lite.validate({}, {"$ref": "http://ailleurs/schema.json"})
+
+
+class Evenements(unittest.TestCase):
+    """Le contrat d'événements accepte la démo de Ruche et refuse ce que le JSON Schema ne sait pas dire."""
+    FIXTURE = os.path.join(EVAL, "fixtures", "demo.events.jsonl")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.schema = plier_evenements.charger_schema("run_events.schema.json")
+        cls.entete, cls.evenements = plier_evenements.charger(cls.FIXTURE, cls.schema)
+
+    def test_la_demo_de_ruche_passe_le_schema(self):
+        self.assertEqual(self.entete["task_id"], "T-07"); self.assertEqual(len(self.evenements), 85)
+        self.assertEqual(self.evenements[-1]["kind"], "run.end")
+
+    def test_les_dix_sept_genres_sont_la(self):
+        self.assertEqual(len(self.schema["$defs"]["kinds"]), 17)
+        self.assertEqual(len(self.schema["oneOf"]), 17)
+
+    def test_la_policy_a_la_forme_du_contrat_de_run(self):
+        contrat = run_tasks_eval.load_json(os.path.join(EVAL, "schemas", "run_contract.schema.json"))
+        pol_run, pol_ev = contrat["properties"]["policy"], self.schema["$defs"]["policy"]
+        self.assertEqual(sorted(pol_run["required"]), sorted(pol_ev["required"]))
+        self.assertEqual(sorted(pol_run["properties"]["quotas"]["required"]), sorted(pol_ev["properties"]["quotas"]["required"]))
+        self.assertIn("max_calls_par_agent", pol_ev["properties"]["quotas"]["properties"])
+
+    def refuse(self, entete, evenements, motif):
+        with self.assertRaises(ValueError) as cm:
+            plier_evenements.verifier_evenements(entete, evenements, self.schema, nom="demo")
+        self.assertIn(motif, str(cm.exception)); self.assertIn("demo", str(cm.exception))
+
+    def test_refuse_un_trou_dans_seq(self):
+        self.refuse(self.entete, [e for e in self.evenements if e["seq"] != 3], "seq")
+
+    def test_refuse_un_fichier_sans_entete(self):
+        self.refuse(self.evenements[0], self.evenements[1:], "en-tête")
+
+    def test_refuse_un_fichier_sans_run_end(self):
+        self.refuse(self.entete, self.evenements[:-1], "run.end")
+
+    def test_refuse_un_genre_inconnu(self):
+        evs = json.loads(json.dumps(self.evenements)); evs[5]["kind"] = "tool.retry"
+        self.refuse(self.entete, evs, "genre inconnu")
+
+    def test_refuse_un_champ_hors_contrat(self):
+        evs = json.loads(json.dumps(self.evenements)); evs[5]["prompt"] = "le contenu voyage par ref, pas ici"
+        self.refuse(self.entete, evs, "propriété inconnue")
+
+    def test_refuse_un_run_id_qui_ne_correspond_pas(self):
+        evs = json.loads(json.dumps(self.evenements)); evs[5]["run"] = "autre"
+        self.refuse(self.entete, evs, "run_id")
+
+    def test_les_verdicts_passent_leur_schema(self):
+        schema = plier_evenements.charger_schema("verdicts.schema.json")
+        for v in run_tasks_eval.load_jsonl(os.path.join(EVAL, "fixtures", "judge.jsonl")):
+            self.assertEqual(jsonschema_lite.validate(v, schema), [], v)
+        self.assertTrue(jsonschema_lite.validate({"task_id": "T-01", "pass": True, "reason": ""}, schema))
+        self.assertTrue(jsonschema_lite.validate({"task_id": "T-01", "pass": True}, schema))
 
 
 @unittest.skipUnless(shutil.which("jq") and shutil.which("sh"), "sh + jq requis")
