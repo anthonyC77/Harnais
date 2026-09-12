@@ -68,3 +68,40 @@ corollaire dur : la troisième colonne des tâches — « à quoi on reconnaît 
 c'est juste » — n'est pas écrite par celui qui code.
 
 Le détail du raisonnement est dans `LIVRABLE.md`.
+
+---
+
+## Qui prend le harnais, qui ne le prend pas
+
+Le harnais ne s'impose pas : il se pose là où il a un référent.
+
+| Projet | Prend | Pourquoi |
+|---|---|---|
+| **oneiros** | le noyau entier, gardes `sh` | c'est sa maison d'origine ; les oracles y ont un objet à mesurer |
+| **coachingia** | **rien pour l'instant** | il n'a ni retrieval ni orchestrateur. Reposer `eval/*.py` à sa racine recréerait la collision `eval/` ↔ `evals/` soldée le 12 septembre, où quatre étapes de CI passaient au vert grâce à des fixtures. Ses agents, gardes et règles sont déjà adaptés — en PowerShell. Sa copie d'archive dort sous `_horus/`. |
+| **notes** | rien | ce n'est pas du code |
+
+La question à se poser avant de poser le harnais n'est pas « est-ce que ça
+compile ? » mais **« y a-t-il ici quelque chose que cet oracle mesure ? »**. Un
+oracle sans objet est un feu vert qui ne veut rien dire.
+
+## Ce que la première pose a révélé
+
+Deux des trois gardes d'oneiros — `guard-etalon.sh` et `guard-paths.sh` —
+étaient en **CRLF**, et depuis le commit initial. Sous `sh`, la ligne
+`PYTHONIOENCODING=utf-8; export PYTHONIOENCODING\r` interrompt le script : la
+garde bloquait alors **tout**, y compris ce qu'elle devait laisser passer. Le
+codeur ne pouvait pas écrire dans `src/`.
+
+**15 sondes sur 28 le disaient depuis le début.** Converties en LF, il en reste
+3 en échec, toutes nommées d'après des chemins Windows ou l'état réel de
+l'utilisateur — à rejuger sur le poste, sous Windows, pas depuis un shell Linux.
+
+C'est le même motif que la garde sans `jq`, et que la CI verte sur des
+fixtures : **un garde-fou qui ne s'exécute pas ressemble beaucoup à un
+garde-fou.** `.gitattributes` force désormais `*.sh eol=lf` et `*.ps1 eol=crlf`,
+pour que ça ne revienne pas par un simple `git checkout` sur Windows.
+
+Note au passage : `installer` a refusé d'écraser les deux fichiers, parce qu'ils
+différaient de la source. C'est le comportement voulu — il a fallu `--forcer`.
+Un installateur qui écrase sans demander ne vaut pas mieux qu'une copie.
