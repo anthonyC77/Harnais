@@ -233,6 +233,26 @@ class ToolIsAType(unittest.TestCase):
         return json.load(open(os.path.join(EVAL, "schemas", "tools", f"{name}.schema.json"), encoding="utf-8"))
 
 
+class SchemaLite(unittest.TestCase):
+    """Les deux mots-clés ajoutés pour le contrat d'événements : $ref local et const."""
+    SCHEMA = {"$defs": {"cout": {"type": "object", "properties": {"calls": {"type": "integer"}}},
+                        "env": {"cout": {"$ref": "#/$defs/cout"}}},
+              "type": "object", "properties": {"kind": {"const": "run.end"}, "cost": {"$ref": "#/$defs/env/cout"}}}
+
+    def test_ref_chaine_resolue_depuis_la_racine(self):
+        self.assertEqual(jsonschema_lite.validate({"kind": "run.end", "cost": {"calls": 1}}, self.SCHEMA), [])
+        errs = jsonschema_lite.validate({"kind": "run.end", "cost": {"calls": "x"}}, self.SCHEMA)
+        self.assertEqual(len(errs), 1); self.assertTrue(errs[0].startswith("$.cost.calls"))
+
+    def test_const(self):
+        errs = jsonschema_lite.validate({"kind": "run.start"}, self.SCHEMA)
+        self.assertEqual(len(errs), 1); self.assertIn("run.end", errs[0])
+
+    def test_ref_non_local_refuse(self):
+        with self.assertRaises(ValueError):
+            jsonschema_lite.validate({}, {"$ref": "http://ailleurs/schema.json"})
+
+
 @unittest.skipUnless(shutil.which("jq") and shutil.which("sh"), "sh + jq requis")
 class Guardrails(unittest.TestCase):
     def hook(self, script, args, payload):
