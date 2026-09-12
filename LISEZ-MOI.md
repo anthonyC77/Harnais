@@ -35,7 +35,11 @@ claude/hooks/ps1/   les trois gardes, PowerShell     → le noyau
 claude/hooks/test_hooks.py   28 sondes sur les gardes → le noyau
 claude/skills/      cadrer, livrer, etat, noeuds, largeur, demo → le noyau
 eval/*.py           les oracles, stdlib pure          → le noyau
-eval/schemas/run_contract.schema.json                 → le noyau
+eval/schemas/run_contract.schema.json   le run RÉSUMÉ, pour juger       → le noyau
+eval/schemas/run_events.schema.json     le run en ÉVÉNEMENTS, pour voir  → le noyau
+eval/schemas/verdicts.schema.json       une ligne de verdict par cas     → le noyau
+eval/plier_evenements.py  eval/deplier_runs.py   d'une projection à l'autre → le noyau
+eval/juge_local.py        le juge hors système : Qwen sur le Mac         → le noyau
 eval/fixtures/      de quoi faire tourner la CI sans serveur → le noyau
 mac-ia/             routeur, pont Anthropic→OpenAI, brain : le LLM local
                     → infrastructure : se lance d'ici, ne se pose nulle part

@@ -50,8 +50,13 @@ NOYAU: list[tuple[str, str]] = [
     ("eval/gen_tool_schemas.py", "eval/gen_tool_schemas.py"),
     ("eval/jsonschema_lite.py", "eval/jsonschema_lite.py"),
     ("eval/width_report.py", "eval/width_report.py"),
+    ("eval/juge_local.py", "eval/juge_local.py"),
+    ("eval/plier_evenements.py", "eval/plier_evenements.py"),
+    ("eval/deplier_runs.py", "eval/deplier_runs.py"),
     ("eval/tests/test_eval.py", "eval/tests/test_eval.py"),
     ("eval/schemas/run_contract.schema.json", "eval/schemas/run_contract.schema.json"),
+    ("eval/schemas/run_events.schema.json", "eval/schemas/run_events.schema.json"),
+    ("eval/schemas/verdicts.schema.json", "eval/schemas/verdicts.schema.json"),
     ("eval/fixtures", "eval/fixtures"),
 ]
 
