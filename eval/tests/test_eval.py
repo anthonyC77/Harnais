@@ -128,6 +128,92 @@ class JugeParCas(unittest.TestCase):
         self.assertEqual(code, 0); self.assertEqual(r["metrics"]["judge_errors"], 0); self.assertEqual(r["metrics"]["n_judged"], 10)
 
 
+class _FauxLmStudio(http.server.BaseHTTPRequestHandler):
+    """LM Studio de poche : renvoie `reponse`, note chaque requête dans `recues`."""
+    reponse = ""
+    finish_val = "stop"
+    recues = []
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        type(self).recues.append(json.loads(self.rfile.read(n).decode("utf-8")))
+        corps = json.dumps({"choices": [{"message": {"role": "assistant", "content": type(self).reponse},
+                                         "finish_reason": type(self).finish_val}]}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(corps)))
+        self.end_headers()
+        self.wfile.write(corps)
+
+    def log_message(self, *args):
+        pass
+
+
+class JugeLocal(unittest.TestCase):
+    """juge_local.py respecte le contrat --judge-cmd, et ne voit jamais la sortie attendue."""
+    JUGE = os.path.join(EVAL, "juge_local.py")
+    PAYLOAD = {"task": {"id": "T-01", "expected": {"output": {"must_contain": ["SORTIE-ATTENDUE-SECRETE"]}}},
+               "run": {"input": {"message": "Combien coûte un badge ?"}, "output": {"text": "20 € TTC"}, "status": "completed",
+                       "tool_calls": [{"tool": "rechercher_documents", "input": {"query": "badge"},
+                                       "output": {"results": [{"text": "SORTIE-VOLUMINEUSE"}]}, "ok": True}]},
+               "rubric": "le prix est exact et sourcé"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = http.server.HTTPServer(("127.0.0.1", 0), _FauxLmStudio)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.url = f"http://127.0.0.1:{cls.srv.server_address[1]}/v1"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown(); cls.srv.server_close()
+
+    def juger(self, url=None):
+        env = dict(os.environ, HARNAIS_JUGE_URL=url or self.url, HARNAIS_JUGE_TIMEOUT="5")
+        return subprocess.run([sys.executable, self.JUGE], input=json.dumps(self.PAYLOAD, ensure_ascii=False),
+                              capture_output=True, encoding="utf-8", env=env)
+
+    def test_extrait_le_dernier_json_apres_la_reflexion(self):
+        _FauxLmStudio.reponse = "<think>Je compare {\"pass\": true} au prix…</think>\nVerdict : {\"pass\": false, \"reason\": \"source absente\"}"
+        p = self.juger()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout), {"pass": False, "reason": "source absente"})
+
+    def test_sans_json_code_2_jamais_pass_false(self):
+        _FauxLmStudio.reponse = "Je ne sais pas trop, la réponse me paraît correcte."
+        p = self.juger()
+        self.assertEqual(p.returncode, 2); self.assertEqual(p.stdout.strip(), ""); self.assertIn("aucun JSON", p.stderr)
+
+    def test_max_tokens_avant_le_json(self):
+        _FauxLmStudio.reponse, _FauxLmStudio.finish_val = "<think>je réfléchis encore", "length"
+        try:
+            p = self.juger()
+            self.assertEqual(p.returncode, 2); self.assertIn("max_tokens", p.stderr)
+        finally:
+            _FauxLmStudio.finish_val = "stop"
+
+    def test_mac_injoignable_code_2(self):
+        s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()  # un port que personne n'écoute
+        p = self.juger(url=f"http://127.0.0.1:{port}/v1")
+        self.assertEqual(p.returncode, 2); self.assertEqual(p.stdout.strip(), ""); self.assertIn("injoignable", p.stderr)
+
+    def test_verdict_sans_raison_code_2(self):
+        _FauxLmStudio.reponse = "{\"pass\": true, \"reason\": \"\"}"
+        p = self.juger()
+        self.assertEqual(p.returncode, 2); self.assertIn("sans raison", p.stderr)
+
+    def test_ne_transmet_jamais_la_sortie_attendue(self):
+        _FauxLmStudio.reponse = "{\"pass\": true, \"reason\": \"ok\"}"
+        _FauxLmStudio.recues.clear()
+        self.assertEqual(self.juger().returncode, 0)
+        requete = _FauxLmStudio.recues[-1]
+        prompt = json.dumps(requete, ensure_ascii=False)
+        self.assertNotIn("SORTIE-ATTENDUE-SECRETE", prompt); self.assertNotIn("expected", prompt)
+        self.assertNotIn("SORTIE-VOLUMINEUSE", prompt)          # les sorties d'outils ne voyagent pas non plus
+        self.assertIn("le prix est exact", prompt); self.assertIn("20 € TTC", prompt)
+        self.assertEqual(requete["model"], "brain"); self.assertEqual(requete["messages"][0]["role"], "system")
+
+
 class ToolIsAType(unittest.TestCase):
     def test_schema_drift_detected_when_type_changes(self):
         with tempfile.TemporaryDirectory() as d:
