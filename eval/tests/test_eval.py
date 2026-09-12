@@ -320,6 +320,63 @@ class Evenements(unittest.TestCase):
         self.assertTrue(jsonschema_lite.validate({"task_id": "T-01", "pass": True}, schema))
 
 
+class Plier(unittest.TestCase):
+    """plier(demo) est conforme au contrat de run, et dit ce que la démo montre."""
+    ATTENDU = {
+        "contract_version": "1.0", "run_id": "run_2026-09-11_T07_a3f91c", "task_id": "T-07", "status": "completed",
+        "input": {"message": "Ajouter `docId` au contrat RechercherDocuments et faire repasser l'eval retrieval"},
+        "output": {"text": ""}, "provenance": [], "human_interventions": 1,
+        "cost": {"calls": 13, "tokens_in": 54500, "tokens_out": 3230, "eur": 0.212, "wall_clock_ms": 68220},
+    }
+    # (outil, ok, latency_ms) — les trois sans latence sont les tool.start refusés par guard-eval-files.sh
+    OUTILS = [("Read", True, 120), ("Read", True, 130), ("Edit", True, 90), ("Bash", True, 4200), ("Bash", False, 6100),
+              ("Write", False, None), ("Edit", False, None), ("Bash", False, None),
+              ("Bash", False, 5200), ("Bash", True, 1800), ("Bash", True, 900), ("Bash", True, 5800), ("Bash", True, 300), ("Bash", True, 3100)]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.schema = plier_evenements.charger_schema("run_events.schema.json")
+        cls.contrat = plier_evenements.charger_schema("run_contract.schema.json")
+        cls.entete, cls.evenements = plier_evenements.charger(Evenements.FIXTURE, cls.schema)
+        cls.the_run = plier_evenements.plier(cls.entete, cls.evenements)
+
+    def test_conforme_au_contrat(self):
+        self.assertEqual(jsonschema_lite.validate(self.the_run, self.contrat), [])
+
+    def test_champ_a_champ(self):
+        for k, v in self.ATTENDU.items():
+            self.assertEqual(self.the_run[k], v, k)
+        self.assertEqual(self.the_run["policy"], self.entete["policy"])
+        self.assertNotIn("cancelled", self.the_run); self.assertNotIn("context_tokens", self.the_run["input"])
+
+    def test_les_appels_d_outils_dans_l_ordre_des_debuts(self):
+        self.assertEqual([(c["tool"], c["ok"], c.get("latency_ms")) for c in self.the_run["tool_calls"]], self.OUTILS)
+        refuse = self.the_run["tool_calls"][5]
+        self.assertEqual(refuse["input"], {"args": "eval/schemas/tools/rechercher_documents.schema.json"})
+        self.assertIsNone(refuse["output"]); self.assertNotIn("latency_ms", refuse)
+        self.assertEqual(self.the_run["tool_calls"][0]["output"], "24 lignes")
+
+    def test_un_run_annule_porte_cancelled(self):
+        evs = json.loads(json.dumps(self.evenements)); evs[-1]["status"] = "cancelled"
+        r = plier_evenements.plier(self.entete, evs)
+        self.assertEqual(r["status"], "cancelled"); self.assertTrue(r["cancelled"])
+
+    def test_cli_ecrit_un_runs_jsonl_valide(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "runs.jsonl")
+            self.assertEqual(plier_evenements.main([Evenements.FIXTURE, "--out", out]), 0)
+            runs = run_tasks_eval.load_jsonl(out)
+            self.assertEqual(len(runs), 1); self.assertEqual(runs[0]["task_id"], "T-07")
+
+    def test_cli_refuse_sans_rien_ecrire(self):
+        with tempfile.TemporaryDirectory() as d:
+            tronque, out = os.path.join(d, "t.events.jsonl"), os.path.join(d, "runs.jsonl")
+            lignes = open(Evenements.FIXTURE, encoding="utf-8").read().splitlines()
+            open(tronque, "w", encoding="utf-8").write("\n".join(lignes[:-1]) + "\n")
+            self.assertEqual(plier_evenements.main([Evenements.FIXTURE, tronque, "--out", out]), 2)
+            self.assertFalse(os.path.exists(out))
+
+
 @unittest.skipUnless(shutil.which("jq") and shutil.which("sh"), "sh + jq requis")
 class Guardrails(unittest.TestCase):
     def hook(self, script, args, payload):
