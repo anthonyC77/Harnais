@@ -303,6 +303,15 @@ class Evenements(unittest.TestCase):
         evs = json.loads(json.dumps(self.evenements)); evs[5]["run"] = "autre"
         self.refuse(self.entete, evs, "run_id")
 
+    def test_refuse_un_entete_hors_schema(self):
+        entete = json.loads(json.dumps(self.entete)); entete["contract_version"] = 2
+        self.refuse(entete, self.evenements, "en-tête")
+
+    def test_refuse_un_fichier_sans_run_start(self):
+        evs = json.loads(json.dumps(self.evenements[1:]))
+        for i, e in enumerate(evs): e["seq"] = i
+        self.refuse(self.entete, evs, "run.start")
+
     def test_les_verdicts_passent_leur_schema(self):
         schema = plier_evenements.charger_schema("verdicts.schema.json")
         for v in run_tasks_eval.load_jsonl(os.path.join(EVAL, "fixtures", "judge.jsonl")):
