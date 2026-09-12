@@ -2,7 +2,7 @@
 import http.server, json, os, shutil, socket, subprocess, sys, tempfile, threading, unittest
 HERE = os.path.dirname(os.path.abspath(__file__)); EVAL = os.path.dirname(HERE); PROJECT = os.path.dirname(EVAL)
 sys.path.insert(0, EVAL)
-import run_eval, run_tasks_eval, jsonschema_lite, check_tool_schemas, plier_evenements  # noqa: E402
+import run_eval, run_tasks_eval, jsonschema_lite, check_tool_schemas, plier_evenements, deplier_runs  # noqa: E402
 
 
 def _etalon(nom):
@@ -375,6 +375,47 @@ class Plier(unittest.TestCase):
             open(tronque, "w", encoding="utf-8").write("\n".join(lignes[:-1]) + "\n")
             self.assertEqual(plier_evenements.main([Evenements.FIXTURE, tronque, "--out", out]), 2)
             self.assertFalse(os.path.exists(out))
+
+
+class Deplier(unittest.TestCase):
+    """deplier puis plier conserve les champs transportés — les deux scripts parlent du même objet."""
+    TRANSPORTES = ("run_id", "task_id", "status", "cost", "policy", "human_interventions")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.schema = plier_evenements.charger_schema("run_events.schema.json")
+        cls.runs = run_tasks_eval.load_jsonl(RUNS)
+
+    def test_aller_retour_sur_les_dix_runs(self):
+        self.assertEqual(len(self.runs), 10)
+        for run in self.runs:
+            entete, evs = deplier_runs.deplier(run)
+            plier_evenements.verifier_evenements(entete, evs, self.schema, nom=run["run_id"])
+            retour = plier_evenements.plier(entete, evs)
+            for k in self.TRANSPORTES:
+                self.assertEqual(retour[k], run[k], f"{run['run_id']}.{k}")
+            self.assertEqual([c["tool"] for c in retour["tool_calls"]], [c["tool"] for c in run["tool_calls"]])
+            self.assertEqual([c["ok"] for c in retour["tool_calls"]], [c["ok"] for c in run["tool_calls"]])
+
+    def test_la_silhouette_se_dit(self):
+        entete, evs = deplier_runs.deplier(self.runs[0])
+        self.assertEqual(evs[0]["ref"], "deplie:run-t-01-001"); self.assertEqual(evs[0]["t"], 0)
+        self.assertEqual(evs[-1]["t"], self.runs[0]["cost"]["wall_clock_ms"])
+        self.assertEqual(entete["agents"], [{"id": "assistant-acces", "role": "assistant-acces", "depth": 0}])
+        self.assertTrue(all(e["origin"] == "observed" for e in evs))
+
+    def test_cli_un_fichier_par_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(deplier_runs.main([RUNS, "--out", d]), 0)
+            fichiers = sorted(os.listdir(d))
+            self.assertEqual(len(fichiers), 10); self.assertIn("run-t-01-001.events.jsonl", fichiers)
+            plier_evenements.charger(os.path.join(d, fichiers[0]), self.schema)
+
+    def test_cli_refuse_un_run_hors_contrat(self):
+        with tempfile.TemporaryDirectory() as d:
+            mauvais = os.path.join(d, "r.jsonl")
+            open(mauvais, "w", encoding="utf-8").write(json.dumps({"run_id": "x"}) + "\n")
+            self.assertEqual(deplier_runs.main([mauvais, "--out", os.path.join(d, "out")]), 2)
 
 
 @unittest.skipUnless(shutil.which("jq") and shutil.which("sh"), "sh + jq requis")
