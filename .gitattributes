@@ -1,0 +1,7 @@
+# Les gardes sont interpretees par `sh`. Un CRLF et le shell lit
+# `export PYTHONIOENCODING=utf-8\r` : la garde s'interrompt et bloque tout,
+# y compris ce qui devait passer. Deux des trois gardes d'oneiros etaient
+# dans cet etat, et 15 sondes sur 28 le disaient sans que personne regarde.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.ps1   text eol=crlf
