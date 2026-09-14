@@ -1,0 +1,6 @@
+{
+  "devise": "EUR",
+  "par_million": {
+    "modele-test": {"input": 3, "cache_creation": 3.75, "cache_read": 0.30, "output": 15}
+  }
+}

@@ -1,0 +1,3 @@
+{"isSidechain": true, "agentId": "relecteur", "type": "user", "message": {"role": "user", "content": "t\u00e2che"}}
+{"isSidechain": true, "agentId": "relecteur", "type": "assistant", "requestId": "req_relecteur_001", "message": {"role": "assistant", "model": "modele-test", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 2000, "cache_creation_input_tokens": 20000, "cache_read_input_tokens": 40000, "output_tokens": 1000}}}
+{"isSidechain": true, "agentId": "relecteur", "type": "assistant", "requestId": "req_relecteur_001", "message": {"role": "assistant", "model": "modele-test", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 2000, "cache_creation_input_tokens": 20000, "cache_read_input_tokens": 40000, "output_tokens": 1000}}}

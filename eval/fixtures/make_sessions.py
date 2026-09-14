@@ -3,7 +3,7 @@
 aux valeurs connues, pour tester lire_transcripts.py et mesurer_sessions.py sans
 toucher à ~/.claude/projects.
 
-  s1-chere        (W37) lit beaucoup, corrige trois fois, une escalade, aucun test, aucun commit
+  s1-chere        (W37) lit beaucoup, corrige trois fois, une escalade, un sous-agent, aucun test, aucun commit
   s2-propre       (W37) relit deux fichiers, édite, lance pytest, commite
   s3-corrections  (W38) relit trois fichiers dont deux déjà vus deux fois, deux corrections,
                         un refus de permission, commite sans test
@@ -73,6 +73,16 @@ class Session:
         self.lignes.append(e)
         self.lignes.append({"type": "attachment", "attachment": {"type": "total_tokens_reminder"}, "sessionId": self.sid})
 
+    def sous_agent(self, nom, usage):
+        """Un transcript de sous-agent : tout en sidechain, une requête, son usage compte pour la session."""
+        d = os.path.join(OUT, self.sid, "subagents")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, f"agent-{nom}.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"isSidechain": True, "agentId": nom, "type": "user", "message": {"role": "user", "content": "tâche"}}) + "\n")
+            for i in range(2):   # deux blocs, même requête
+                f.write(json.dumps({"isSidechain": True, "agentId": nom, "type": "assistant", "requestId": f"req_{nom}_001",
+                                    "message": {"role": "assistant", "model": MODELE, "content": [{"type": "text", "text": "ok"}], "usage": dict(usage)}}) + "\n")
+
     def ecrire(self):
         os.makedirs(OUT, exist_ok=True)
         with open(os.path.join(OUT, f"{self.sid}.jsonl"), "w", encoding="utf-8") as f:
@@ -109,6 +119,7 @@ def s1():
     s.assistant([{"type": "tool_use", "id": tid, "name": "AskUserQuestion", "input": {"questions": [{"question": "Quel fichier ?"}]}}], U_GROS)
     s.resultat(tid, "b.py")
     s.assistant([{"type": "thinking", "thinking": "raisonnement"}, {"type": "text", "text": "Voilà, c'est dans b.py."}], U_GROS)
+    s.sous_agent("relecteur", U_GROS)
     s.ecrire()
 
 
