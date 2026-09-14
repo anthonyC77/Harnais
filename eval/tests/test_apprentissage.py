@@ -325,5 +325,139 @@ class ExtraireCandidats(unittest.TestCase):
             "La validation des badges vit dans src/b.py", "Les tests se lancent avec pytest"), extraire_candidats.SEUIL_DOUBLON)
 
 
+import io  # noqa: E402
+import passation  # noqa: E402
+
+
+def _hook(evenement, session, d, **extra):
+    """Simule Claude Code : le JSON du hook sur stdin, CLAUDE_PROJECT_DIR posé. Renvoie (code, stdout, stderr)."""
+    entree = {"session_id": session, "transcript_path": os.path.join(SESSIONS, session + ".jsonl"), "cwd": d,
+              "hook_event_name": {"fin": "SessionEnd", "stop": "Stop", "debut": "SessionStart"}[evenement]}
+    entree.update(extra)
+    out, err = io.StringIO(), io.StringIO()
+    code = passation.main([evenement, "--dir", d], entree=json.dumps(entree), sortie=out, erreur=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+def _lire(d, session):
+    with open(os.path.join(d, "passations", session + ".md"), encoding="utf-8") as f:
+        return f.read()
+
+
+class Passation(unittest.TestCase):
+    # --- fin : la couche mécanique ------------------------------------------ #
+    def test_fin_ecrit_la_couche_mecanique(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, out, err = _hook("fin", "s2-propre", d, reason="exit")
+            self.assertEqual(code, 0)
+            t = _lire(d, "s2-propre")
+            self.assertIn("# Passation — session s2-propre", t)
+            self.assertIn("## Mécanique", t)
+            self.assertIn("d:/fixture/tests/test_b.py", t)                 # fichier modifié
+            self.assertIn("`python -m pytest -q` → ok", t)                # commande de test et son sort
+            self.assertIn("git add -A && git commit -m 'test'", t)        # commit
+            self.assertIn("commit détecté : oui", t)
+            self.assertNotIn("résultat accepté :", t)                     # la ligne qui prime reste à l'humain
+
+    def test_fin_garde_la_narrative_existante(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "passations"))
+            with open(os.path.join(d, "passations", "s1-chere.md"), "w", encoding="utf-8") as f:
+                f.write("# Passation — session s1-chere\n\n## Narrative\n- objectif : valider les badges\n- résultat accepté : non\n")
+            _hook("fin", "s1-chere", d)
+            t = _lire(d, "s1-chere")
+            self.assertIn("- objectif : valider les badges", t)
+            self.assertIn("## Mécanique", t)
+            self.assertIn("`python -m mypy src` → erreur", t)
+            self.assertEqual(t.count("## Narrative"), 1); self.assertEqual(t.count("## Mécanique"), 1)
+            _hook("fin", "s1-chere", d)                                  # deux fois : idempotent
+            self.assertEqual(_lire(d, "s1-chere").count("## Mécanique"), 1)
+
+    def test_fin_sans_transcript_sort_0_sans_ecrire(self):
+        with tempfile.TemporaryDirectory() as d:
+            code = passation.main(["fin", "--dir", d], entree=json.dumps({"session_id": "x", "transcript_path": os.path.join(d, "absent.jsonl")}), sortie=io.StringIO(), erreur=io.StringIO())
+            self.assertEqual(code, 0); self.assertFalse(os.path.exists(os.path.join(d, "passations")))
+            self.assertEqual(passation.main(["fin", "--dir", d], entree="pas du json", sortie=io.StringIO(), erreur=io.StringIO()), 0)
+
+    # --- stop : la couche narrative ------------------------------------------ #
+    def test_stop_sans_edition_laisse_passer(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(SESSIONS, "s2-propre.jsonl")
+            with open(src, encoding="utf-8") as f, open(os.path.join(d, "lecture.jsonl"), "w", encoding="utf-8") as g:
+                for l in f:
+                    if '"Write"' not in l and '"Edit"' not in l:
+                        g.write(l)
+            code = passation.main(["stop", "--dir", d], entree=json.dumps({"session_id": "lecture", "transcript_path": os.path.join(d, "lecture.jsonl")}), sortie=io.StringIO(), erreur=io.StringIO())
+            self.assertEqual(code, 0)
+
+    def test_stop_apres_edition_sans_narrative_demande(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, out, err = _hook("stop", "s2-propre", d)
+            self.assertEqual(code, 2)
+            self.assertIn("passations", err); self.assertIn("s2-propre.md", err)
+            for rubrique in ("objectif", "état actuel", "décisions prises", "risques restants", "prochaines actions", "résultat accepté"):
+                self.assertIn(rubrique, err)
+
+    def test_stop_hook_active_ne_reboucle_pas(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, _, _ = _hook("stop", "s2-propre", d, stop_hook_active=True)
+            self.assertEqual(code, 0)
+
+    def test_stop_avec_narrative_fraiche_laisse_passer(self):
+        # La narrative est « fraîche » quand le transcript montre son écriture après les derniers outils.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "passations", "s2-propre.md"); os.makedirs(os.path.dirname(p))
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("## Narrative\n- objectif : x\n")
+            src = os.path.join(SESSIONS, "s2-propre.jsonl")
+            with open(src, encoding="utf-8") as f:
+                lignes = [l for l in f if l.startswith("{\"parentUuid")]
+            ecriture = json.dumps({"parentUuid": None, "isSidechain": False, "type": "assistant", "requestId": "req_narr", "sessionId": "s2-propre",
+                                   "timestamp": "2026-09-09T11:00:00.000Z", "message": {"role": "assistant", "content": [
+                                       {"type": "tool_use", "id": "toolu_narr", "name": "Write", "input": {"file_path": p.replace("\\", "/"), "content": "## Narrative"}}]}})
+            t = os.path.join(d, "s2-propre.jsonl")
+            with open(t, "w", encoding="utf-8") as g:
+                g.write("".join(lignes) + ecriture + "\n")
+            code = passation.main(["stop", "--dir", d], entree=json.dumps({"session_id": "s2-propre", "transcript_path": t}), sortie=io.StringIO(), erreur=io.StringIO())
+            self.assertEqual(code, 0)
+            # Vingt appels d'outils plus tard : on la redemande.
+            with open(t, "a", encoding="utf-8") as g:
+                for i in range(20):
+                    g.write(json.dumps({"parentUuid": None, "isSidechain": False, "type": "assistant", "requestId": f"req_x{i}", "sessionId": "s2-propre",
+                                        "message": {"role": "assistant", "content": [{"type": "tool_use", "id": f"toolu_x{i}", "name": "Read", "input": {"file_path": "d:/fixture/src/a.py"}}]}}) + "\n")
+            code = passation.main(["stop", "--dir", d, "--seuil-outils", "20"], entree=json.dumps({"session_id": "s2-propre", "transcript_path": t}), sortie=io.StringIO(), erreur=io.StringIO())
+            self.assertEqual(code, 2)
+
+    # --- debut : relire la dernière ------------------------------------------- #
+    def test_debut_sans_passation_ne_dit_rien(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, out, _ = _hook("debut", "s3-corrections", d, source="startup")
+            self.assertEqual(code, 0); self.assertEqual(out.strip(), "")
+
+    def test_debut_injecte_la_derniere_passation_pas_la_sienne(self):
+        with tempfile.TemporaryDirectory() as d:
+            _hook("fin", "s1-chere", d); _hook("fin", "s2-propre", d)
+            os.utime(os.path.join(d, "passations", "s1-chere.md"), (1, 1))   # s1 plus ancienne
+            code, out, _ = _hook("debut", "s3-corrections", d, source="startup")
+            self.assertEqual(code, 0)
+            j = json.loads(out)
+            ctx = j["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(j["hookSpecificOutput"]["hookEventName"], "SessionStart")
+            self.assertIn("s2-propre", ctx); self.assertNotIn("s1-chere", ctx)
+            self.assertIn("Ne relis pas", ctx)
+            # Sa propre passation (reprise de session) n'est pas relue.
+            code, out, _ = _hook("debut", "s2-propre", d, source="resume")
+            self.assertIn("s1-chere", json.loads(out)["hookSpecificOutput"]["additionalContext"])
+
+    def test_debut_plafonne_a_60_lignes(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "passations"))
+            with open(os.path.join(d, "passations", "longue.md"), "w", encoding="utf-8") as f:
+                f.write("\n".join(f"- ligne {i}" for i in range(200)))
+            _, out, _ = _hook("debut", "s3-corrections", d)
+            ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("ligne 59", ctx); self.assertNotIn("ligne 60\n", ctx); self.assertIn("tronquée", ctx)
+
+
 if __name__ == "__main__":
     unittest.main()

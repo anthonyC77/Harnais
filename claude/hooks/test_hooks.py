@@ -45,6 +45,13 @@ def bash(command):
     return {"tool_name": "Bash", "tool_input": {"command": command}}
 
 
+TRANSCRIPT_FIXTURE = str(ROOT / "eval" / "fixtures" / "sessions" / "s2-propre.jsonl")
+
+
+def hook_stop(transcript):
+    return {"session_id": "s2-propre", "transcript_path": transcript, "hook_event_name": "Stop"}
+
+
 # (hook, argument, entrée, code attendu, description)
 PROBES = [
     # --- guard-etalon : l'étalon ------------------------------------------- #
@@ -96,6 +103,13 @@ PROBES = [
     ("guard-paths.sh", "no-tests", edit("oneiros/tests/test_x.py"), 2, "codeur : modifier un test"),
     ("guard-paths.sh", "no-tests", edit(SPEC), 2, "codeur : modifier la spec"),
     ("guard-paths.sh", "no-tests", edit("oneiros/src/oneiros/cli.py"), 0, "codeur : modifier le source"),
+    # --- passation : les trois hooks, sur un transcript de fixture ---------- #
+    ("passation-stop.sh", "", hook_stop(TRANSCRIPT_FIXTURE), 2, "stop : édition sans passation → on la demande"),
+    ("passation-stop.sh", "", dict(hook_stop(TRANSCRIPT_FIXTURE), stop_hook_active=True), 0, "stop : second arrêt, on ne reboucle pas"),
+    ("passation-stop.sh", "", hook_stop(str(ROOT / "eval" / "fixtures" / "absent.jsonl")), 0, "stop : transcript absent → on laisse passer"),
+    ("passation-stop.sh", "", "pas du json", 0, "stop : entrée illisible → on laisse passer"),
+    ("passation-fin.sh", "", hook_stop(TRANSCRIPT_FIXTURE), 0, "fin : la couche mécanique s'écrit, sort 0"),
+    ("passation-debut.sh", "", {"session_id": "autre"}, 0, "début : relire la dernière passation, sort 0"),
 ]
 
 
@@ -104,7 +118,9 @@ def run():
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, OSError):
         pass
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(ROOT))
+    import tempfile
+    apprentissage = tempfile.mkdtemp(prefix="passation-")   # les hooks de passation écrivent ici, jamais dans le projet
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(ROOT), HARNAIS_APPRENTISSAGE_DIR=apprentissage)
     failures = []
     for hook, arg, payload, expected, label in PROBES:
         body = payload if isinstance(payload, str) else json.dumps(payload)
