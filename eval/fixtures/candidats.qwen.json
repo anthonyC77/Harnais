@@ -1,5 +1,5 @@
 {
- "_note": "Réponses de Qwen enregistrées, une par session, pour tester extraire_candidats.py sans serveur. Le texte imite un modèle à réflexion : il parle avant le JSON. s2 contient un candidat invalide (type inconnu) et s3 répète l'énoncé sur b.py de s1, formulé autrement.",
+ "_note": "Réponses de Qwen enregistrées, une par session, pour tester extraire_candidats.py sans serveur. Le texte imite un modèle à réflexion : il parle avant le JSON. s2 contient un candidat invalide (type inconnu) et s3 répète l'énoncé sur b.py de s1, formulé autrement. s-raisonnement : le JSON dans reasoning_content et content vide, comme LM Studio le rend avec response_format.",
  "s1-chere": {
   "finish_reason": "stop",
   "content": "Je regarde le digest. L'humain a corrigé deux fois l'emplacement de la validation, et mypy a échoué.\n{\"candidats\": [\n {\"type\": \"regle\", \"enonce\": \"La validation des badges vit dans src/b.py, pas dans src/a.py\", \"preuve\": \"[humain] non, pas ça : la validation va dans b.py ; puis « je t'ai dit que c'est dans b.py »\", \"niveau_propose\": \"doc\", \"applicable\": \"choix\", \"verifiable_par\": \"grep -n validation src/b.py\", \"confiance\": 0.9},\n {\"type\": \"procedure\", \"enonce\": \"Lancer python -m mypy src avant de conclure une modification de src/\", \"preuve\": \"[Bash] python -m mypy src → erreur, puis correction demandée\", \"niveau_propose\": \"test\", \"applicable\": \"verification\", \"verifiable_par\": \"python -m mypy src\", \"confiance\": 0.7},\n {\"type\": \"episode\", \"enonce\": \"L'agent a lu docs/INDEX.md puis src/c.md sans s'en servir\", \"preuve\": \"[Read] d:/fixture/docs/INDEX.md ; [Read] d:/fixture/src/c.md\", \"niveau_propose\": \"note\", \"applicable\": \"action\", \"verifiable_par\": \"\", \"confiance\": 0.5}\n]}"
@@ -15,5 +15,10 @@
  "s-tronquee": {
   "finish_reason": "length",
   "content": ""
+ },
+ "s-raisonnement": {
+  "finish_reason": "stop",
+  "content": "",
+  "reasoning_content": "{\"candidats\": [{\"type\": \"fait\", \"enonce\": \"Le JSON peut arriver dans reasoning_content plutot que dans content\", \"preuve\": \"sonde du 14 septembre 2026\", \"niveau_propose\": \"doc\", \"applicable\": \"action\", \"verifiable_par\": \"\", \"confiance\": 0.9}]}"
  }
 }

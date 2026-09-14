@@ -118,10 +118,16 @@ def lire_reponse(reponse: dict):
     """(candidats, motif d'échec). Une réponse tronquée est un échec, pas une liste vide."""
     try:
         choix = reponse["choices"][0]
-        texte = choix.get("message", {}).get("content") or choix.get("content") or ""
+        message = choix.get("message") or {}
+        texte = message.get("content") or choix.get("content") or ""
+        # LM Studio + response_format + /no_think (Qwen3, 14 sept. 2026) : le JSON arrive dans
+        # `reasoning_content`, `content` reste vide. On lit les deux, le contenu d'abord.
+        reflexion = message.get("reasoning_content") or message.get("reasoning") or ""
     except (KeyError, IndexError, TypeError, AttributeError):
         return None, f"réponse inattendue : {json.dumps(reponse)[:200]}"
     cands = extraire_json(texte)
+    if cands is None and reflexion:
+        cands = extraire_json(reflexion)
     if cands is None:
         if choix.get("finish_reason") == "length":
             return None, "max_tokens atteint avant le JSON (la réflexion a mangé le budget)"
@@ -277,7 +283,7 @@ def main(argv=None) -> int:
             rep = reponses.get(s.session_id)
             if rep is None:
                 continue
-            reponse = {"choices": [{"message": {"content": rep.get("content", "")}, "finish_reason": rep.get("finish_reason", "stop")}]}
+            reponse = {"choices": [{"message": {"content": rep.get("content", ""), "reasoning_content": rep.get("reasoning_content", "")}, "finish_reason": rep.get("finish_reason", "stop")}]}
         else:
             try:
                 reponse = appeler(a.url, a.modele, consigne, composer(s, a.apprentissage_dir), schema_rep, a.max_tokens, a.timeout)

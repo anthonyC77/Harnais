@@ -302,6 +302,16 @@ class ExtraireCandidats(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertFalse(os.path.exists(os.path.join(d, "candidats.jsonl")))
 
+    def test_json_dans_reasoning_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(SESSIONS, "s2-propre.jsonl")
+            with open(src, encoding="utf-8") as f, open(os.path.join(d, "s-raisonnement.jsonl"), "w", encoding="utf-8") as g:
+                g.write(f.read().replace("s2-propre", "s-raisonnement"))
+            code = extraire_candidats.main(["--projet", d, "--apprentissage-dir", d, "--reponses-fichier", QWEN, "--quiet"])
+            self.assertEqual(code, 0)
+            with open(os.path.join(d, "candidats.jsonl"), encoding="utf-8") as f:
+                self.assertIn("reasoning_content", f.read())
+
     def test_serveur_injoignable_est_code_2(self):
         with tempfile.TemporaryDirectory() as d:
             code = extraire_candidats.main(["--projet", SESSIONS, "--apprentissage-dir", d, "--url", "http://127.0.0.1:9", "--timeout", "1", "--quiet"])
