@@ -54,6 +54,14 @@ NOYAU: list[tuple[str, str]] = [
     ("eval/plier_evenements.py", "eval/plier_evenements.py"),
     ("eval/deplier_runs.py", "eval/deplier_runs.py"),
     ("eval/tests/test_eval.py", "eval/tests/test_eval.py"),
+    # La boucle d'apprentissage : les scripts, la consigne, le schéma — pas les mesures ni la file.
+    ("eval/lire_transcripts.py", "eval/lire_transcripts.py"),
+    ("eval/mesurer_sessions.py", "eval/mesurer_sessions.py"),
+    ("eval/extraire_candidats.py", "eval/extraire_candidats.py"),
+    ("eval/passation.py", "eval/passation.py"),
+    ("eval/consigne-extraction.md", "eval/consigne-extraction.md"),
+    ("eval/schemas/candidat.schema.json", "eval/schemas/candidat.schema.json"),
+    ("eval/tests/test_apprentissage.py", "eval/tests/test_apprentissage.py"),
     ("eval/schemas/run_contract.schema.json", "eval/schemas/run_contract.schema.json"),
     ("eval/schemas/run_events.schema.json", "eval/schemas/run_events.schema.json"),
     ("eval/schemas/verdicts.schema.json", "eval/schemas/verdicts.schema.json"),
@@ -66,6 +74,10 @@ AU_PROJET = [
     "eval/golden_set.jsonl", "eval/tasks_golden.jsonl", "eval/baseline.json",
     "eval/guardrail_probes.jsonl", "eval/policy/agents.json", "eval/tasks/",
     ".claude/rules/", ".claude/settings.json",
+    # La boucle d'apprentissage : la grille de prix, les seuils, les lexiques et les mesures
+    # (modèle dans modele/eval/apprentissage/, à copier une fois) ; la file de candidats et
+    # les passations (créées au premier run).
+    "eval/apprentissage/", ".claude/apprentissage/",
 ]
 
 
