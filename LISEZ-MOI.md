@@ -41,6 +41,11 @@ eval/schemas/verdicts.schema.json       une ligne de verdict par cas     → le 
 eval/plier_evenements.py  eval/deplier_runs.py   d'une projection à l'autre → le noyau
 eval/juge_local.py        le juge hors système : Qwen sur le Mac         → le noyau
 eval/fixtures/      de quoi faire tourner la CI sans serveur → le noyau
+eval/lire_transcripts.py  mesurer_sessions.py  les sessions Claude Code, les six signaux → le noyau
+eval/extraire_candidats.py  consigne-extraction.md  Qwen propose des candidats → le noyau
+eval/passation.py   derrière les hooks passation-*, sh et ps1     → le noyau
+eval/schemas/candidat.schema.json   une ligne de la file de candidats   → le noyau
+claude/skills/capitaliser   la revue hebdomadaire de la boucle        → le noyau
 mac-ia/             routeur, pont Anthropic→OpenAI, brain : le LLM local
                     → infrastructure : se lance d'ici, ne se pose nulle part
 
@@ -48,6 +53,8 @@ modele/             ce qu'un projet copie UNE fois puis fait sien
   eval/golden_set.jsonl, tasks_golden.jsonl, baseline.json
   eval/guardrail_probes.jsonl, eval/policy/agents.json, eval/tasks/
   rules/            les règles par langage, à choisir et à réécrire
+  eval/apprentissage/  prix.json, seuils.json, corrections.txt, commandes-test.txt
+                       — et les mesures par semaine ; .claude/apprentissage/ : la file, les passations
 
 exemples/src/Horus.Tools/   « un outil est un type », en trois fichiers
 ```
@@ -64,6 +71,66 @@ jamais au modèle une fois qu'il est chez vous : ce sont des étalons, et un
 étalon distribué depuis un dépôt partagé ne mesure plus rien. La troisième
 colonne d'une tâche d'eval doit être signée par quelqu'un du métier — elle ne
 peut pas arriver par `git pull`.
+
+## Le harnais apprend
+
+Une session Claude Code coûte surtout de la **redécouverte** : relire le dépôt,
+retrouver une convention, refaire un raisonnement déjà fait. Réduire le coût d'un
+trajet ne change rien au trajet suivant. Ce que le noyau transporte depuis le 14
+septembre 2026 est une boucle qui reprend chaque session et la réécrit sous une
+forme plus durable — et des signaux qui disent si ça marche.
+Spec : `docs/superpowers/specs/2026-09-14-boucle-apprentissage-design.md`.
+
+```
+session ──(hooks Stop, SessionEnd)──▶ .claude/apprentissage/passations/<session>.md
+   │                                          ▲ (SessionStart relit la dernière)
+   ▼
+~/.claude/projects/<projet>/*.jsonl
+   ├─▶ eval/mesurer_sessions.py   (0 LLM) ─▶ eval/apprentissage/semaine-YYYY-Www.{json,md}
+   └─▶ eval/extraire_candidats.py (Qwen)  ─▶ .claude/apprentissage/candidats.jsonl
+                                                       │
+                                  /capitaliser (l'humain) : promeut, rejette, épisode
+                                                       ▼
+                        doc (+INDEX.md) · skill · test (test_hooks.py) · hook · code
+```
+
+**Les six signaux**, par semaine ISO, déterministes, delta sur la semaine précédente :
+coût par résultat accepté · temps jusqu'au résultat fiable · corrections répétées ·
+taux d'escalade humaine · part couverte par des tests · taux de redécouverte.
+`mesurer_sessions.py` sort `1` quand l'un d'eux se dégrade au-delà de `seuils.json` —
+ce n'est pas une panne, c'est « si les métriques ne bougent pas, le système n'apprend
+rien » rendu exécutable. Le coût agrège l'usage des sous-agents à la session mère.
+
+**Poser la boucle dans un projet**, après `harnais.py installer` :
+
+```powershell
+# 1. L'étalon, une fois, puis à vous : grille de prix, seuils, lexiques.
+Copy-Item -Recurse harnais\modele\eval\apprentissage <projet>\eval\apprentissage
+# 2. Les hooks, dans .claude/settings.json du projet (jamais posé par installer) :
+```
+
+```json
+"Stop":         [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/passation-stop.sh"}]}],
+"SessionEnd":   [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/passation-fin.sh"}]}],
+"SessionStart": [{"matcher": "startup|clear|compact", "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/passation-debut.sh"}]}]
+```
+
+Sur un poste `--hooks ps1`, remplacer `.sh` par `.ps1` et lancer via
+`powershell -NoProfile -ExecutionPolicy Bypass -File`. Les six enveloppes ne font
+qu'appeler `eval/passation.py` ; sans Python elles sortent 0, elles ne bloquent
+jamais quelqu'un. `modele/rules/apprentissage.md` porte la règle à copier dans le
+`CLAUDE.md` du projet.
+
+**La revue, 30 minutes par semaine** — `/capitaliser <projet>` : mesure, extrait ce
+qui manque (Qwen résident sur le Mac, sinon code 2 et rien d'inventé), puis les quatre
+questions — *qu'avons-nous redécouvert, quelles corrections se sont répétées, que
+promouvoir, que supprimer* — chacune lue dans un fichier, jamais dans la mémoire de
+la conversation. La porte est humaine et par candidat. Le modèle écrit la cible et met
+à jour la trace dans le même geste ; il ne commite pas.
+
+Ce que la boucle ne fait pas, et c'est voulu : rien n'entre dans `docs/`, un skill, un
+test ou une garde sans un geste humain. Une mauvaise règle mémorisée industrialise
+l'erreur — et elle est dans le harnais.
 
 ## Les deux invariants que ce harnais transporte
 
