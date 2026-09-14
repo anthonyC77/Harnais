@@ -1,0 +1,19 @@
+{
+ "_note": "Réponses de Qwen enregistrées, une par session, pour tester extraire_candidats.py sans serveur. Le texte imite un modèle à réflexion : il parle avant le JSON. s2 contient un candidat invalide (type inconnu) et s3 répète l'énoncé sur b.py de s1, formulé autrement.",
+ "s1-chere": {
+  "finish_reason": "stop",
+  "content": "Je regarde le digest. L'humain a corrigé deux fois l'emplacement de la validation, et mypy a échoué.\n{\"candidats\": [\n {\"type\": \"regle\", \"enonce\": \"La validation des badges vit dans src/b.py, pas dans src/a.py\", \"preuve\": \"[humain] non, pas ça : la validation va dans b.py ; puis « je t'ai dit que c'est dans b.py »\", \"niveau_propose\": \"doc\", \"applicable\": \"choix\", \"verifiable_par\": \"grep -n validation src/b.py\", \"confiance\": 0.9},\n {\"type\": \"procedure\", \"enonce\": \"Lancer python -m mypy src avant de conclure une modification de src/\", \"preuve\": \"[Bash] python -m mypy src → erreur, puis correction demandée\", \"niveau_propose\": \"test\", \"applicable\": \"verification\", \"verifiable_par\": \"python -m mypy src\", \"confiance\": 0.7},\n {\"type\": \"episode\", \"enonce\": \"L'agent a lu docs/INDEX.md puis src/c.md sans s'en servir\", \"preuve\": \"[Read] d:/fixture/docs/INDEX.md ; [Read] d:/fixture/src/c.md\", \"niveau_propose\": \"note\", \"applicable\": \"action\", \"verifiable_par\": \"\", \"confiance\": 0.5}\n]}"
+ },
+ "s2-propre": {
+  "finish_reason": "stop",
+  "content": "{\"candidats\": [\n {\"type\": \"procedure\", \"enonce\": \"Les tests se lancent avec python -m pytest -q depuis la racine\", \"preuve\": \"[Bash] python -m pytest -q → 1 passed\", \"niveau_propose\": \"doc\", \"applicable\": \"verification\", \"verifiable_par\": \"python -m pytest -q\", \"confiance\": 0.8},\n {\"type\": \"astuce\", \"enonce\": \"Un candidat au type inconnu doit être rejeté avec sa raison\", \"preuve\": \"aucune\", \"niveau_propose\": \"doc\", \"applicable\": \"action\", \"verifiable_par\": \"\", \"confiance\": 0.3}\n]}"
+ },
+ "s3-corrections": {
+  "finish_reason": "stop",
+  "content": "{\"candidats\": [\n {\"type\": \"regle\", \"enonce\": \"La validation des badges se trouve dans src/b.py et non dans src/a.py\", \"preuve\": \"[Edit] d:/fixture/src/b.py après [humain] non\", \"niveau_propose\": \"doc\", \"applicable\": \"choix\", \"verifiable_par\": \"grep -n validation src/b.py\", \"confiance\": 0.8},\n {\"type\": \"regle\", \"enonce\": \"Ne jamais supprimer src/ : renommer se fait par Edit, jamais par rm -rf\", \"preuve\": \"[Bash] rm -rf d:\\\\fixture\\\\src → refusé par l'utilisateur ; [humain] encore une fois : renomme, ne supprime pas\", \"niveau_propose\": \"hook\", \"applicable\": \"permission\", \"verifiable_par\": \"python .claude/hooks/test_hooks.py\", \"confiance\": 0.95}\n]}"
+ },
+ "s-tronquee": {
+  "finish_reason": "length",
+  "content": ""
+ }
+}

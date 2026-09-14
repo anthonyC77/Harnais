@@ -3,7 +3,7 @@
 import json, os, shutil, sys, tempfile, unittest
 HERE = os.path.dirname(os.path.abspath(__file__)); EVAL = os.path.dirname(HERE); PROJECT = os.path.dirname(EVAL)
 sys.path.insert(0, EVAL)
-import lire_transcripts  # noqa: E402
+import lire_transcripts, jsonschema_lite  # noqa: E402
 
 SESSIONS = os.path.join(EVAL, "fixtures", "sessions")
 
@@ -222,6 +222,107 @@ class MesurerSessions(unittest.TestCase):
             self.assertEqual(apres["c-3"]["statut"], "deprecie"); self.assertIn("2020-01-01", apres["c-3"]["motif"])
             self.assertEqual(apres["c-4"]["statut"], "propose")
             self.assertEqual(sorted(r["semaine-2026-W38"]["deprecies"]), ["c-2", "c-3"])
+
+
+import extraire_candidats  # noqa: E402
+
+QWEN = os.path.join(EVAL, "fixtures", "candidats.qwen.json")
+
+
+def _extraire(d, *extra):
+    args = ["--projet", SESSIONS, "--apprentissage-dir", d, "--reponses-fichier", QWEN, "--quiet"] + list(extra)
+    code = extraire_candidats.main(args)
+    cands, rejets = [], []
+    p = os.path.join(d, "candidats.jsonl")
+    if os.path.exists(p):
+        with open(p, encoding="utf-8") as f:
+            cands = [json.loads(l) for l in f if l.strip()]
+    p = os.path.join(d, "candidats.rejetes.jsonl")
+    if os.path.exists(p):
+        with open(p, encoding="utf-8") as f:
+            rejets = [json.loads(l) for l in f if l.strip()]
+    return code, cands, rejets
+
+
+class ExtraireCandidats(unittest.TestCase):
+    def test_candidats_valides_ids_et_statut(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, cands, rejets = _extraire(d)
+            self.assertEqual(code, 0)
+            # s1 : 3 candidats ; s2 : 1 valide + 1 rejeté ; s3 : 1 doublon de s1 + 1 nouveau → 5 lignes
+            self.assertEqual(len(cands), 5)
+            self.assertEqual([c["id"] for c in cands][:3], ["c-2026-W37-001", "c-2026-W37-002", "c-2026-W37-003"])
+            self.assertEqual([c["statut"] for c in cands], ["propose", "propose", "episode", "propose", "propose"])   # un type episode naît episode
+            self.assertTrue(all(c["session"] for c in cands))
+            schema = extraire_candidats.charger_schema()
+            for c in cands:
+                self.assertEqual(jsonschema_lite.validate(c, schema), [], c["id"])
+
+    def test_candidat_invalide_va_dans_rejetes_avec_motif(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, cands, rejets = _extraire(d)
+            self.assertEqual(len(rejets), 1)
+            self.assertEqual(rejets[0]["session"], "s2-propre")
+            self.assertIn("type", rejets[0]["motif"])
+            self.assertIn("astuce", json.dumps(rejets[0]["candidat"], ensure_ascii=False))
+
+    def test_dedoublonnage_incremente_la_recurrence(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, cands, _ = _extraire(d)
+            b = next(c for c in cands if "b.py" in c["enonce"] and c["type"] == "regle")
+            self.assertEqual(b["recurrence"], 2)
+            self.assertEqual(b["sessions_vues"], ["s1-chere", "s3-corrections"])
+            self.assertEqual(b["derniere_vue"], "2026-09-15")
+            rm = next(c for c in cands if "rm -rf" in c["enonce"])
+            self.assertEqual(rm["recurrence"], 1); self.assertEqual(rm["niveau_propose"], "hook")
+
+    def test_seconde_passe_ne_reextrait_pas(self):
+        with tempfile.TemporaryDirectory() as d:
+            _extraire(d)
+            code, cands, _ = _extraire(d)
+            self.assertEqual(code, 0); self.assertEqual(len(cands), 5)
+            self.assertEqual(max(c["recurrence"] for c in cands), 2)
+            with open(os.path.join(d, "extraits.json"), encoding="utf-8") as f:
+                self.assertEqual(sorted(json.load(f)), ["s1-chere", "s2-propre", "s3-corrections"])
+
+    def test_session_unique_et_refaire(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, cands, _ = _extraire(d, "--session", "s3")
+            self.assertEqual(code, 0); self.assertEqual(len(cands), 2)
+            code, cands, _ = _extraire(d, "--session", "s3", "--refaire")
+            self.assertEqual(len(cands), 2)   # rejoué sur la même session : doublon exact, pas de récurrence gonflée
+            self.assertEqual(max(c["recurrence"] for c in cands), 1)
+
+    def test_reponse_tronquee_est_un_echec_pas_un_vert(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(SESSIONS, "s2-propre.jsonl")
+            with open(src, encoding="utf-8") as f, open(os.path.join(d, "s-tronquee.jsonl"), "w", encoding="utf-8") as g:
+                g.write(f.read().replace("s2-propre", "s-tronquee"))
+            code = extraire_candidats.main(["--projet", d, "--apprentissage-dir", d, "--reponses-fichier", QWEN, "--quiet"])
+            self.assertEqual(code, 1)
+            self.assertFalse(os.path.exists(os.path.join(d, "candidats.jsonl")))
+
+    def test_serveur_injoignable_est_code_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            code = extraire_candidats.main(["--projet", SESSIONS, "--apprentissage-dir", d, "--url", "http://127.0.0.1:9", "--timeout", "1", "--quiet"])
+            self.assertEqual(code, 2)
+
+    def test_digest_envoye_contient_la_passation(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "passations"))
+            with open(os.path.join(d, "passations", "s2-propre.md"), "w", encoding="utf-8") as f:
+                f.write("## Narrative\n- objectif : couvrir la validation\n")
+            s = lire_transcripts.lire_session(os.path.join(SESSIONS, "s2-propre.jsonl"))
+            texte = extraire_candidats.composer(s, d)
+            self.assertIn("couvrir la validation", texte)
+            self.assertIn("[Bash] python -m pytest -q", texte)
+
+    def test_similarite(self):
+        self.assertGreaterEqual(extraire_candidats.similarite(
+            "La validation des badges vit dans src/b.py, pas dans src/a.py",
+            "La validation des badges se trouve dans src/b.py et non dans src/a.py"), extraire_candidats.SEUIL_DOUBLON)
+        self.assertLess(extraire_candidats.similarite(
+            "La validation des badges vit dans src/b.py", "Les tests se lancent avec pytest"), extraire_candidats.SEUIL_DOUBLON)
 
 
 if __name__ == "__main__":
