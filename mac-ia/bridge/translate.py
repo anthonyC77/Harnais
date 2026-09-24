@@ -408,6 +408,16 @@ class StreamTranslator:
 
     # -- framing helpers ---------------------------------------------------- #
 
+    def start(self) -> Iterator[bytes]:
+        """Open the message before the runtime has produced anything.
+
+        Lets the server emit ``message_start`` as soon as the upstream accepts
+        the request, so keepalive ``ping`` events have a message to belong to
+        while the model is still reading the prompt. Idempotent: ``feed`` will
+        not repeat it.
+        """
+        yield from self._start_message()
+
     def _start_message(self) -> Iterator[bytes]:
         if self._started:
             return

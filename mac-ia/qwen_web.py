@@ -15,7 +15,8 @@ l'outil D:\\AudioToTxt\\stt\\transcrire.py (faster-whisper, GPU puis CPU). Le mo
 au premier usage puis reste en mémoire. Lancer avec le Python qui a faster-whisper (C:\\Python311).
 
 Le bouton « Charger brain » ouvre un SSH avec le mot de passe (une fois) via resumer.py si le modèle
-n'est pas résident. Journal : un .md par échange dans ./journal, jamais effacé par le script.
+n'est pas résident. Le bouton « Couper la file » ouvre le même SSH pour libérer LM Studio d'une
+file de requêtes fantômes : redémarrer le pont (secondes) ou recharger brain (minutes). Journal : un .md par échange dans ./journal, jamais effacé par le script.
 """
 import argparse
 import datetime as dt
@@ -46,6 +47,18 @@ EXTENSIONS_AUDIO = {".opus", ".ogg", ".mp3", ".m4a", ".wav", ".aac", ".flac", ".
 MAX_TOKENS_MIN, MAX_TOKENS_MAX = 256, 32768
 TEMPERATURE_MAX = 2.0
 PREFILL_SANS_REFLEXION = "<think>\n\n</think>\n\n"   # tour assistant amorcé : Qwen3 répond alors sans réfléchir
+
+# Skills : une instruction système nommée, réutilisable, avec ses réglages. Un fichier .md par skill dans ./skills,
+# en-tête entre --- (name, description, reflexion, max_tokens, temperature), corps = l'instruction. Éditables à la main.
+SKILLS = Path(__file__).resolve().parent / "skills"
+CORBEILLE_SKILLS = "corbeille"   # un skill supprimé y est déplacé, jamais effacé
+
+# Consigne donnée à Qwen quand on lui demande de rédiger un skill à partir d'une phrase.
+REDACTEUR_SKILL = """Tu rédiges des instructions système pour un assistant de langue (un modèle de texte, sans outils).
+On te décrit en une phrase l'usage voulu ; tu écris l'instruction complète, en français, à la deuxième personne
+(« Tu es… », « Quand on te donne… »). Précise : le rôle, ce que l'assistant reçoit, ce qu'il renvoie exactement
+et sous quelle forme, ce qu'il ne doit pas faire, et comment il signale un doute. Entre 6 et 15 lignes, sans titre,
+sans préambule ni conclusion : renvoie uniquement le texte de l'instruction."""
 
 # ---------------------------------------------------------------------------------------------------
 # Rendu Markdown (JavaScript exécuté dans la page ; isolé ici pour être testé avec node).
@@ -111,6 +124,19 @@ function md(src) {
 }
 """
 
+# Combinaison des skills cochés (JavaScript de la page, isolé pour être testé avec node) :
+# un seul skill = son instruction telle quelle ; plusieurs = chacune sous son titre ; les réglages viennent du premier
+# skill coché qui les définit.
+SCRIPT_SKILLS = r"""
+function combinerSkills(skills, ids) {
+  const choisis = ids.map(id => skills.find(s => s.id === id)).filter(s => s && s.corps);
+  const reglages = {};
+  for (const s of choisis) for (const k of ['reflexion', 'max_tokens', 'temperature']) if (s[k] !== null && s[k] !== undefined && !(k in reglages)) reglages[k] = s[k];
+  const systeme = choisis.length === 1 ? choisis[0].corps : choisis.map(s => '## ' + s.nom + '\n\n' + s.corps).join('\n\n');
+  return { systeme, reglages };
+}
+"""
+
 PAGE = r"""<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Qwen · brain</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -167,6 +193,11 @@ PAGE = r"""<!doctype html>
   details.panneau { margin-bottom:8px } details.panneau summary { cursor:pointer; color:var(--muted); font-size:13px }
   .reglages { display:flex; gap:18px; flex-wrap:wrap; align-items:center; padding:8px 0 4px; font-size:13px }
   .reglages label { display:flex; gap:8px; align-items:center } .reglages input[type=range] { width:130px } .reglages output { min-width:44px; font-variant-numeric:tabular-nums }
+  .skills { display:flex; flex-wrap:wrap; gap:6px; padding:6px 0 2px }
+  .skills label { display:inline-flex; gap:6px; align-items:center; border:1px solid var(--bord); border-radius:999px; padding:3px 10px; font-size:13px; cursor:pointer; background:var(--carte) }
+  .skills label.coche { border-color:var(--accent); background:var(--accent-fond) }
+  .skills label.casse { border-color:var(--ko); color:var(--ko) }
+  .skills label .suppr { color:var(--muted); font-size:11px; margin-left:2px } .skills label .suppr:hover { color:var(--ko) }
   #systeme { width:100%; min-height:54px; border:1px solid var(--bord); border-radius:6px; padding:8px; font:inherit; resize:vertical; background:var(--fond); color:var(--texte); margin-top:6px }
   #composeur { border:1px solid var(--bord); border-radius:10px; background:var(--fond); padding:8px 8px 6px }
   #composeur.sur { border-color:var(--accent); background:var(--accent-fond) }
@@ -177,6 +208,7 @@ PAGE = r"""<!doctype html>
   .aide { color:var(--muted); font-size:12px; margin-top:6px }
   dialog { border:1px solid var(--bord); border-radius:8px; padding:20px; max-width:420px; background:var(--carte); color:var(--texte) }
   dialog input { width:100%; padding:8px; font:inherit; border:1px solid var(--bord); border-radius:6px; margin:8px 0 12px; background:var(--fond); color:var(--texte) }
+  dialog label { display:block; margin:4px 0; font-size:14px } dialog label input { width:auto; margin:0 6px 0 0 }
   #journal { font-family:ui-monospace, monospace; font-size:12px; white-space:pre-wrap; color:var(--muted); max-height:200px; overflow:auto }
   .vide { color:var(--muted); text-align:center; margin-top:60px }
   input[type=file] { display:none }
@@ -186,6 +218,7 @@ PAGE = r"""<!doctype html>
   <span class="etat">
     <span><span class="pastille" id="p-brain"></span><span id="etat-brain">vérification…</span></span>
     <button id="btn-charger" class="petit" hidden>Charger brain</button>
+    <button id="btn-couper" class="petit" title="Libérer LM Studio d'une file de requêtes fantômes (session Claude Code coupée, etc.)">Couper la file</button>
     <span><span class="pastille" id="p-whisper"></span><span id="etat-whisper">Whisper</span></span>
   </span>
   <span class="espace"></span>
@@ -197,8 +230,14 @@ PAGE = r"""<!doctype html>
 <div id="fil"><div id="fil-int"><div class="vide" id="vide">Pose une question, dicte-la au micro, ou dépose un fichier texte ou audio.</div></div></div>
 
 <div id="bas"><div>
-  <details class="panneau" id="pan-systeme"><summary>Instruction système <span id="systeme-resume"></span></summary>
-    <textarea id="systeme" placeholder="Optionnel. Envoyée une fois, en tête de la conversation (ex. : « Réponds en français, de façon concise. »)."></textarea>
+  <details class="panneau" id="pan-systeme"><summary>Skills <span id="systeme-resume"></span></summary>
+    <div id="liste-skills" class="skills"></div>
+    <textarea id="systeme" placeholder="Instruction envoyée une fois, en tête de la conversation. Coche des skills ci-dessus pour la remplir, ou écris-la toi-même."></textarea>
+    <div class="barre">
+      <button id="btn-skill-enregistrer" class="petit" title="Sauver cette instruction et les réglages du moment sous un nom">Enregistrer comme skill</button>
+      <button id="btn-skill-rediger" class="petit" title="Décrire l'usage en une phrase, Qwen rédige l'instruction">Demander à Qwen de rédiger</button>
+      <span class="aide" id="skills-info"></span>
+    </div>
   </details>
   <details class="panneau" id="pan-reglages"><summary>Réglages : <span id="reglages-resume"></span></summary>
     <div class="reglages">
@@ -232,6 +271,35 @@ PAGE = r"""<!doctype html>
   </form>
 </dialog>
 
+<dialog id="dlg-skill">
+  <form method="dialog">
+    <div>Enregistrer l'instruction actuelle et les réglages du moment comme skill :</div>
+    <input type="text" id="skill-nom" placeholder="Nom (ex. : Relecture de mail)" autocomplete="off">
+    <input type="text" id="skill-desc" placeholder="Description en une ligne (facultative)" autocomplete="off">
+    <div id="skill-erreur" class="erreur"></div>
+    <div class="barre"><button class="prim" id="btn-skill-ok" type="button">Enregistrer</button><button type="submit">Annuler</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-rediger">
+  <form method="dialog">
+    <div>Décris en une phrase ce que le skill doit faire ; Qwen rédige l'instruction dans la case, tu la relis avant de l'enregistrer.</div>
+    <input type="text" id="rediger-usage" placeholder="ex. : corriger un mail professionnel sans le rendre froid" autocomplete="off">
+    <div class="barre"><button class="prim" id="btn-rediger-ok" type="button">Rédiger</button><button type="submit">Annuler</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-couper">
+  <form method="dialog">
+    <div>Le Mac ne sert qu'une requête à la fois : une session Claude Code coupée peut laisser des générations fantômes en file. Mot de passe SSH de <b id="dlg-couper-compte"></b> :</div>
+    <input type="password" id="mdp-couper" autocomplete="current-password">
+    <label><input type="radio" name="mode-couper" value="pont" checked> Redémarrer le pont — quelques secondes, coupe ce qui venait de Claude Code</label>
+    <label><input type="radio" name="mode-couper" value="modele"> Recharger le modèle — une à deux minutes, arrête tout à coup sûr</label>
+    <div id="journal-couper"></div>
+    <div class="barre"><button class="prim" id="btn-couper-ok" type="button">Couper</button><button type="submit">Fermer</button></div>
+  </form>
+</dialog>
+
 <script>
 __SCRIPT_MD__
 const $ = id => document.getElementById(id);
@@ -239,32 +307,129 @@ const CLE = 'qwen_web.reglages';
 let messages = [];          // fil envoyé au modèle : {role, content}
 let pieces = [];            // pièces jointes en attente : {nom, contenu}
 let ctrl = null, chronoId = null, enregistreur = null;
+let skills = [];            // bibliothèque lue sur le serveur : {id, nom, description, corps, reflexion, max_tokens, temperature}
+let skillsCoches = [];      // identifiants cochés, dans l'ordre du clic
+let redacteurSkill = '';    // consigne serveur pour « Demander à Qwen de rédiger »
 
 // ---- réglages (mémorisés dans le navigateur) -------------------------------------------------
+function nomsSkills() { return skillsCoches.map(id => (skills.find(s => s.id === id) || {}).nom).filter(Boolean); }
 function lireReglages() {
-  return { reflexion: $('reflexion').checked, max_tokens: +$('max_tokens').value, temperature: +$('temperature').value, systeme: $('systeme').value };
+  return { reflexion: $('reflexion').checked, max_tokens: +$('max_tokens').value, temperature: +$('temperature').value, systeme: $('systeme').value, skills: skillsCoches };
 }
 function afficherReglages() {
   const r = lireReglages();
   $('o-max_tokens').textContent = r.max_tokens.toLocaleString('fr');
   $('o-temperature').textContent = r.temperature.toFixed(2);
   $('reglages-resume').textContent = (r.reflexion ? 'réflexion' : 'sans réflexion') + ' · ' + r.max_tokens.toLocaleString('fr') + ' tokens · T ' + r.temperature.toFixed(2);
-  $('systeme-resume').textContent = r.systeme.trim() ? '— ' + r.systeme.trim().slice(0, 60) : '(vide)';
+  const noms = nomsSkills();
+  $('systeme-resume').textContent = noms.length ? '— ' + noms.join(' + ') : r.systeme.trim() ? '— (instruction libre) ' + r.systeme.trim().slice(0, 50) : '(aucun)';
   try { localStorage.setItem(CLE, JSON.stringify(r)); } catch {}
 }
+function appliquerReglages(reg) {
+  if (reg.reflexion !== undefined) $('reflexion').checked = reg.reflexion;
+  if (reg.max_tokens !== undefined) $('max_tokens').value = reg.max_tokens;
+  if (reg.temperature !== undefined) $('temperature').value = reg.temperature;
+}
 (function initReglages() {
-  let r = { reflexion: true, max_tokens: __MAX_TOKENS__, temperature: 0.3, systeme: '' };
+  let r = { reflexion: true, max_tokens: __MAX_TOKENS__, temperature: 0.3, systeme: '', skills: [] };
   try { r = Object.assign(r, JSON.parse(localStorage.getItem(CLE) || '{}')); } catch {}
-  $('reflexion').checked = r.reflexion; $('max_tokens').value = r.max_tokens; $('temperature').value = r.temperature; $('systeme').value = r.systeme;
+  appliquerReglages(r); $('systeme').value = r.systeme; skillsCoches = Array.isArray(r.skills) ? r.skills : [];
   for (const id of ['reflexion', 'max_tokens', 'temperature', 'systeme']) $(id).addEventListener('input', afficherReglages);
   afficherReglages();
 })();
+
+// ---- skills : bibliothèque d'instructions nommées, un fichier par skill dans ./skills -----------
+function afficherSkills() {
+  const zone = $('liste-skills'); zone.innerHTML = '';
+  skillsCoches = skillsCoches.filter(id => skills.some(s => s.id === id && s.corps));
+  for (const s of skills) {
+    const l = document.createElement('label'); l.title = s.erreur ? s.erreur : (s.description || s.corps.slice(0, 200));
+    const c = document.createElement('input'); c.type = 'checkbox'; c.disabled = !!s.erreur; c.checked = skillsCoches.includes(s.id);
+    c.onchange = () => { skillsCoches = c.checked ? [...skillsCoches, s.id] : skillsCoches.filter(id => id !== s.id); recomposer(); };
+    l.appendChild(c); l.appendChild(document.createTextNode(s.nom + (s.erreur ? ' (fichier cassé)' : '')));
+    const x = document.createElement('span'); x.className = 'suppr'; x.textContent = '✕'; x.title = 'mettre à la corbeille';
+    x.onclick = async e => { e.preventDefault(); if (!confirm('Mettre le skill « ' + s.nom + ' » à la corbeille ?')) return; await appelSkills('/api/skills/supprimer', { id: s.id }); };
+    l.appendChild(x);
+    l.className = (c.checked ? 'coche' : '') + (s.erreur ? ' casse' : '');
+    zone.appendChild(l);
+  }
+  if (!skills.length) zone.textContent = 'Aucun skill : écris une instruction ci-dessous puis « Enregistrer comme skill ».';
+  afficherReglages();
+}
+function recomposer() {
+  const { systeme, reglages } = combinerSkills(skills, skillsCoches);
+  $('systeme').value = systeme; appliquerReglages(reglages);
+  for (const l of $('liste-skills').querySelectorAll('label')) l.classList.toggle('coche', l.querySelector('input').checked);
+  afficherReglages();
+}
+async function appelSkills(url, corps) {
+  try {
+    const rep = await fetch(url, corps ? { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(corps) } : {});
+    const j = await rep.json();
+    if (!rep.ok) { $('skills-info').textContent = j.erreur || rep.statusText; return j; }
+    skills = j.skills || []; redacteurSkill = j.redacteur || redacteurSkill; $('skills-info').textContent = '';
+    afficherSkills();
+    return j;
+  } catch (e) { $('skills-info').textContent = 'skills injoignables : ' + e.message; return null; }
+}
+$('btn-skill-enregistrer').onclick = () => {
+  if (!$('systeme').value.trim()) { $('skills-info').textContent = "L'instruction est vide : rien à enregistrer."; return; }
+  $('skill-nom').value = skillsCoches.length === 1 ? nomsSkills()[0] : ''; $('skill-desc').value = ''; $('skill-erreur').textContent = '';
+  $('dlg-skill').showModal(); $('skill-nom').focus();
+};
+$('btn-skill-ok').onclick = async (ecraser = false) => {
+  const r = lireReglages();
+  const corps = { nom: $('skill-nom').value, description: $('skill-desc').value, corps: r.systeme, reflexion: r.reflexion, max_tokens: r.max_tokens, temperature: r.temperature, ecraser: ecraser === true };
+  const rep = await fetch('/api/skills', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(corps) });
+  const j = await rep.json();
+  if (rep.status === 409) { if (confirm('Un skill « ' + $('skill-nom').value + ' » existe déjà. Le remplacer ?')) return $('btn-skill-ok').onclick(true); return; }
+  if (!rep.ok) { $('skill-erreur').textContent = j.erreur || rep.statusText; return; }
+  $('dlg-skill').close(); skills = j.skills; skillsCoches = [j.id]; afficherSkills();
+  $('skills-info').textContent = 'enregistré : skills/' + j.id + '.md';
+};
+$('btn-skill-rediger').onclick = () => { $('rediger-usage').value = ''; $('dlg-rediger').showModal(); $('rediger-usage').focus(); };
+$('btn-rediger-ok').onclick = async () => {
+  const usage = $('rediger-usage').value.trim(); if (!usage) return;
+  $('dlg-rediger').close(); skillsCoches = []; afficherSkills();
+  $('systeme').value = ''; $('skills-info').textContent = 'Qwen rédige…';
+  try {
+    const rep = await fetch('/api/chat', { method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ messages: [{ role: 'user', content: usage }], systeme: redacteurSkill, reflexion: true, max_tokens: 4096, temperature: 0.4, sans_journal: true }) });
+    if (!rep.ok) throw new Error(await rep.text());
+    let dansThink = false;
+    await lireSSE(rep, delta => {
+      let c = delta.content || '';
+      while (c) {
+        if (dansThink) { const i = c.indexOf('</think>'); if (i < 0) c = ''; else { c = c.slice(i + 8); dansThink = false; } }
+        else { const i = c.indexOf('<think>'); if (i < 0) { $('systeme').value += c; c = ''; } else { $('systeme').value += c.slice(0, i); c = c.slice(i + 7); dansThink = true; } }
+      }
+    });
+    $('systeme').value = $('systeme').value.trim(); afficherReglages();
+    $('skills-info').textContent = $('systeme').value ? 'Relis, ajuste, puis « Enregistrer comme skill ».' : 'Qwen a renvoyé une instruction vide.';
+  } catch (e) { $('skills-info').textContent = 'Rédaction impossible : ' + e.message; }
+};
+async function lireSSE(rep, surDelta) {
+  const lecteur = rep.body.getReader(), dec = new TextDecoder(); let tampon = '';
+  for (;;) {
+    const { value, done } = await lecteur.read();
+    if (done) return;
+    tampon += dec.decode(value, { stream: true });
+    const lignes = tampon.split('\n'); tampon = lignes.pop();
+    for (const l of lignes) {
+      if (!l.startsWith('data: ') || l === 'data: [DONE]') continue;
+      let ev; try { ev = JSON.parse(l.slice(6)); } catch { continue; }
+      if (ev.erreur) throw new Error(ev.erreur);
+      surDelta(((ev.choices || [])[0] || {}).delta || {});
+    }
+  }
+}
+appelSkills('/api/skills');
 
 // ---- état des modèles -----------------------------------------------------------------------
 async function etat() {
   try {
     const r = await (await fetch('/api/etat')).json();
-    $('dlg-compte').textContent = r.compte;
+    $('dlg-compte').textContent = r.compte; $('dlg-couper-compte').textContent = r.compte;
     if (!r.serveur) { $('p-brain').className = 'pastille ko'; $('etat-brain').textContent = 'LM Studio injoignable sur ' + r.base; $('btn-charger').hidden = false; }
     else if (r.brain) { $('p-brain').className = 'pastille ok'; $('etat-brain').textContent = 'brain résident sur ' + r.base; $('btn-charger').hidden = true; }
     else { $('p-brain').className = 'pastille ko'; $('etat-brain').textContent = 'serveur joignable, brain non chargé'; $('btn-charger').hidden = false; }
@@ -284,6 +449,18 @@ $('btn-dlg-ok').onclick = async () => {
     if (j.ok) { $('journal').textContent += '\nchargé.'; await etat(); } else { $('journal').textContent += '\nÉCHEC : ' + (j.erreur || ''); }
   } catch (e) { $('journal').textContent += '\nerreur : ' + e; }
   $('btn-dlg-ok').disabled = false; $('mdp').value = '';
+};
+$('btn-couper').onclick = () => { $('journal-couper').textContent = ''; $('dlg-couper').showModal(); $('mdp-couper').focus(); };
+$('btn-couper-ok').onclick = async () => {
+  const mode = document.querySelector('input[name=mode-couper]:checked').value;
+  $('btn-couper-ok').disabled = true; $('journal-couper').textContent = 'connexion SSH…\n';
+  try {
+    const r = await fetch('/api/couper', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mdp: $('mdp-couper').value, mode }) });
+    const j = await r.json();
+    $('journal-couper').textContent += j.journal || '';
+    if (j.ok) { $('journal-couper').textContent += '\nfile libérée.'; await etat(); } else { $('journal-couper').textContent += '\nÉCHEC : ' + (j.erreur || ''); }
+  } catch (e) { $('journal-couper').textContent += '\nerreur : ' + e; }
+  $('btn-couper-ok').disabled = false; $('mdp-couper').value = '';
 };
 
 // ---- fil de conversation --------------------------------------------------------------------
@@ -349,7 +526,7 @@ async function envoyer() {
   const rafraichir = force => { const t = Date.now(); if (force || t - dernierRendu > 120) { rendre(bulle, brut); dernierRendu = t; defiler(); } };
   try {
     const rep = await fetch('/api/chat', { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ messages, systeme: r.systeme, reflexion: r.reflexion, max_tokens: r.max_tokens, temperature: r.temperature }), signal: ctrl.signal });
+      body: JSON.stringify({ messages, systeme: r.systeme, reflexion: r.reflexion, max_tokens: r.max_tokens, temperature: r.temperature, skills: nomsSkills() }), signal: ctrl.signal });
     if (!rep.ok) throw new Error(await rep.text());
     const lecteur = rep.body.getReader(), dec = new TextDecoder();
     for (;;) {
@@ -404,6 +581,7 @@ $('btn-exporter').onclick = () => {
   if (!messages.length) return;
   const r = lireReglages();
   let s = '# Conversation Qwen — ' + new Date().toLocaleString('fr') + '\n\n';
+  if (nomsSkills().length) s += 'Skills : ' + nomsSkills().join(', ') + '\n\n';
   if (r.systeme.trim()) s += '## Instruction système\n\n' + r.systeme.trim() + '\n\n';
   for (const m of messages) s += '## ' + (m.role === 'user' ? 'Toi' : 'Qwen') + '\n\n' + m.content + '\n\n';
   const a = document.createElement('a');
@@ -515,7 +693,7 @@ def construire_requete(messages, systeme, reflexion, max_tokens, temperature):
     }
 
 
-def ecrire_journal(messages, systeme, reponse, reflexion, reglages, dossier=None, quand=None):
+def ecrire_journal(messages, systeme, reponse, reflexion, reglages, dossier=None, quand=None, skills=None):
     """Un fichier Markdown par échange, nommé par la date : la question n'est jamais perdue.
 
     Le dernier message utilisateur est la question du jour ; les tours précédents sont donnés comme contexte.
@@ -532,6 +710,8 @@ def ecrire_journal(messages, systeme, reponse, reflexion, reglages, dossier=None
         f"réglages : réflexion : {'oui' if reglages.get('reflexion') else 'non'} · max_tokens : {reglages.get('max_tokens')}"
         f" · température : {reglages.get('temperature')}",
     ]
+    if skills:
+        parties.append(f"skills : {', '.join(skills)}")
     if (systeme or "").strip():
         parties += ["", "## Instruction système", "", systeme.strip()]
     if precedents:
@@ -553,6 +733,97 @@ def ecrire_journal(messages, systeme, reponse, reflexion, reglages, dossier=None
     raise RuntimeError(f"journal : impossible de trouver un nom libre pour {base}")
 
 
+def _booleen(v):
+    if v is None:
+        return None
+    return str(v).strip().lower() in ("oui", "true", "1", "yes", "on")
+
+
+def lire_skill(fichier):
+    """Un fichier .md → dict {id, nom, description, reflexion, max_tokens, temperature, corps}, ou {id, erreur}."""
+    fichier = Path(fichier)
+    ident = fichier.stem
+    try:
+        texte = fichier.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"id": ident, "nom": ident, "erreur": f"illisible : {exc}"}
+    texte = texte.replace("\r\n", "\n")
+    fin = texte.find("\n---", 4) if texte.startswith("---\n") else -1
+    if fin < 0:
+        return {"id": ident, "nom": ident, "erreur": "pas d'en-tête entre deux lignes « --- »"}
+    en_tete, corps = texte[4:fin], texte[fin + 4:].lstrip("\n")
+    champs = {}
+    for ligne in en_tete.splitlines():
+        if ":" in ligne:
+            cle, val = ligne.split(":", 1)
+            champs[cle.strip().lower()] = val.strip()
+    try:
+        max_tokens = int(champs["max_tokens"]) if champs.get("max_tokens") else None
+        temperature = float(champs["temperature"]) if champs.get("temperature") else None
+    except ValueError as exc:
+        return {"id": ident, "nom": champs.get("name") or ident, "erreur": f"réglage illisible : {exc}"}
+    return {
+        "id": ident,
+        "nom": champs.get("name") or ident,
+        "description": champs.get("description", ""),
+        "reflexion": _booleen(champs.get("reflexion")),
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "corps": corps.strip(),
+    }
+
+
+def lister_skills(dossier=None):
+    """Les skills du dossier (pas ses sous-dossiers), triés par nom ; un fichier cassé apparaît avec son erreur."""
+    dossier = Path(dossier) if dossier else SKILLS
+    if not dossier.is_dir():
+        return []
+    return sorted((lire_skill(f) for f in dossier.glob("*.md")), key=lambda s: s["nom"].lower())
+
+
+def identifiant_skill(nom):
+    """« Relecture de code Rust ! » → « relecture-de-code-rust » : le nom de fichier, sûr et lisible."""
+    import unicodedata
+    plat = unicodedata.normalize("NFKD", nom).encode("ascii", "ignore").decode()
+    ident = "-".join(m for m in "".join(c if c.isalnum() else " " for c in plat.lower()).split())
+    if not ident:
+        raise ValueError("le nom du skill doit contenir au moins une lettre ou un chiffre")
+    return ident
+
+
+def enregistrer_skill(dossier, nom, description, corps, reglages, ecraser=False):
+    """Écrit <dossier>/<identifiant>.md ; FileExistsError si le fichier existe et qu'on n'a pas demandé à écraser."""
+    dossier = Path(dossier) if dossier else SKILLS
+    if not (corps or "").strip():
+        raise ValueError("l'instruction est vide")
+    ident = identifiant_skill(nom)
+    lignes = ["---", f"name: {nom.strip()}", f"description: {(description or '').strip()}"]
+    if reglages.get("reflexion") is not None:
+        lignes.append(f"reflexion: {'oui' if reglages['reflexion'] else 'non'}")
+    if reglages.get("max_tokens") is not None:
+        lignes.append(f"max_tokens: {int(reglages['max_tokens'])}")
+    if reglages.get("temperature") is not None:
+        lignes.append(f"temperature: {float(reglages['temperature']):g}")
+    lignes += ["---", corps.strip(), ""]
+    dossier.mkdir(exist_ok=True)
+    with open(dossier / f"{ident}.md", "w" if ecraser else "x", encoding="utf-8") as f:
+        f.write("\n".join(lignes))
+    return ident
+
+
+def supprimer_skill(dossier, ident):
+    """Déplace le skill dans <dossier>/corbeille/ (horodaté) : rien n'est jamais effacé."""
+    dossier = Path(dossier) if dossier else SKILLS
+    if not ident or ident != identifiant_skill(ident):
+        raise ValueError(f"identifiant de skill invalide : {ident!r}")
+    source = dossier / f"{ident}.md"
+    if not source.is_file():
+        raise FileNotFoundError(f"skill inconnu : {ident}")
+    corbeille = dossier / CORBEILLE_SKILLS
+    corbeille.mkdir(exist_ok=True)
+    source.rename(corbeille / f"{ident}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.md")
+
+
 def titre_journal(fichier):
     """Première ligne de la section Question (ou Consigne, pour les anciens fichiers)."""
     for bloc in fichier.read_text(encoding="utf-8").split("\n## ")[1:]:
@@ -567,6 +838,43 @@ def titre_journal(fichier):
 _whisper = {"modele": None, "etat": "pret", "erreur": "", "verrou": threading.Lock()}
 _verrou_transcription = threading.Lock()   # une transcription à la fois : le GPU n'en fait pas deux plus vite
 _verrou_chargement_mac = threading.Lock()  # un seul « Charger brain » à la fois : deux SSH se marcheraient dessus
+
+
+def commande_couper(mode, lms):
+    """Ce qu'on envoie au Mac pour libérer LM Studio d'une file de requêtes fantômes.
+
+    `pont` : tuer le pont et le relancer détaché. Ses connexions vers LM Studio tombent, et
+    LM Studio abandonne une génération dont le client a disparu. Quelques secondes.
+    `modele` : décharger tout puis recharger brain — arrête tout ce qui tourne, à coup sûr,
+    mais une à deux minutes le temps de remettre les poids en mémoire.
+    """
+    if mode == "pont":
+        return ("pkill -f bridge/server.py; cd ~/mac-ia && "
+                "nohup python3 bridge/server.py > bridge.log 2>&1 < /dev/null &")
+    if mode == "modele":
+        return (f'"{lms}" unload --all >/dev/null 2>&1; '
+                f'"{lms}" load "{resumer.MODELE_CLE}" --identifier "{resumer.IDENTIFIANT}" '
+                f"--context-length {resumer.CONTEXTE} -y")
+    raise ValueError(f"mode inconnu : {mode!r} (attendu : pont ou modele)")
+
+
+def couper_mac(client, mode):
+    """Exécute commande_couper sur le Mac par SSH ; renvoie les lignes du journal à afficher."""
+    journal = []
+    lms = ""
+    if mode == "modele":
+        code, lms = resumer.ssh_run(client, resumer.TROUVER_LMS, timeout=15)
+        if code != 0 or not lms:
+            raise RuntimeError("lms introuvable sur le Mac. Ouvrir LM Studio une fois, puis : ~/.lmstudio/bin/lms bootstrap")
+        journal.append(f"[mac] lms : {lms}")
+    journal.append("[mac] redémarrage du pont…" if mode == "pont" else "[mac] déchargement puis rechargement de brain, une à deux minutes…")
+    code, sortie = resumer.ssh_run(client, commande_couper(mode, lms), timeout=600)
+    if sortie:
+        journal.append(sortie)
+    if code != 0:
+        raise RuntimeError(f"la commande a rendu {code}")
+    journal.append("[mac] fait.")
+    return journal
 
 
 def _stt():
@@ -619,7 +927,7 @@ def lire_modeles():
 
 
 def page_html():
-    return (PAGE.replace("__SCRIPT_MD__", SCRIPT_MD)
+    return (PAGE.replace("__SCRIPT_MD__", SCRIPT_MD + SCRIPT_SKILLS)
                 .replace("__MAX_TOKENS__", str(resumer.MAX_TOKENS))
                 .replace("__EXT_AUDIO__", json.dumps(sorted(EXTENSIONS_AUDIO))))
 
@@ -656,6 +964,8 @@ class Relais(BaseHTTPRequestHandler):
             self._page_journal()
         elif self.path.startswith("/journal/"):
             self._fichier_journal(self.path[len("/journal/"):])
+        elif self.path == "/api/skills":
+            self._skills_json()
         elif self.path == "/api/etat":
             compte = f"{resumer.MAC_USER}@{resumer.MAC_IP}"
             whisper = {"whisper": _whisper["etat"], "whisper_erreur": _whisper["erreur"]}
@@ -692,10 +1002,42 @@ class Relais(BaseHTTPRequestHandler):
             self._chat()
         elif self.path == "/api/charger":
             self._charger()
+        elif self.path == "/api/couper":
+            self._couper()
         elif self.path.startswith("/api/transcrire"):
             self._transcrire()
+        elif self.path == "/api/skills":
+            self._skill_enregistrer()
+        elif self.path == "/api/skills/supprimer":
+            self._skill_supprimer()
         else:
             self.send_error(404)
+
+    def _skills_json(self, code=200, **extra):
+        self._json(code, {"skills": lister_skills(), "dossier": str(SKILLS), "redacteur": REDACTEUR_SKILL, **extra})
+
+    def _skill_enregistrer(self):
+        d = self._corps()
+        reglages = {k: d.get(k) for k in ("reflexion", "max_tokens", "temperature")}
+        try:
+            ident = enregistrer_skill(SKILLS, d.get("nom") or "", d.get("description") or "", d.get("corps") or "",
+                                      reglages, ecraser=bool(d.get("ecraser")))
+        except FileExistsError:
+            self._json(409, {"erreur": "un skill porte déjà ce nom", "id": identifiant_skill(d.get("nom") or "")})
+            return
+        except ValueError as exc:
+            self._json(400, {"erreur": str(exc)})
+            return
+        self._skills_json(id=ident)
+
+    def _skill_supprimer(self):
+        d = self._corps()
+        try:
+            supprimer_skill(SKILLS, d.get("id") or "")
+        except (ValueError, FileNotFoundError) as exc:
+            self._json(400, {"erreur": str(exc)})
+            return
+        self._skills_json()
 
     def _chat(self):
         d = self._corps()
@@ -724,8 +1066,9 @@ class Relais(BaseHTTPRequestHandler):
                             reponse.append(delta["content"])
                         if delta.get("reasoning_content"):
                             reflexion.append(delta["reasoning_content"])
-            if reponse:
-                nom = ecrire_journal(messages, d.get("systeme") or "", "".join(reponse), "".join(reflexion), reglages)
+            if reponse and not d.get("sans_journal"):  # sans_journal : la rédaction d'un skill n'est pas un échange
+                nom = ecrire_journal(messages, d.get("systeme") or "", "".join(reponse), "".join(reflexion), reglages,
+                                     skills=[str(s) for s in (d.get("skills") or [])])
                 self.wfile.write(f"data: {json.dumps({'journal': nom})}\n\n".encode("utf-8"))
                 self.wfile.flush()
         except urllib.error.HTTPError as exc:
@@ -752,6 +1095,29 @@ class Relais(BaseHTTPRequestHandler):
             self._json(500, {"erreur": str(exc) or repr(exc)})
             return
         self._json(200, {"texte": texte, "duree": round((dt.datetime.now() - debut).total_seconds(), 1)})
+
+    def _couper(self):
+        d = self._corps()
+        mode = d.get("mode") or "pont"
+        if mode not in ("pont", "modele"):
+            self._json(200, {"ok": False, "journal": "", "erreur": f"mode inconnu : {mode!r}"})
+            return
+        if not _verrou_chargement_mac.acquire(blocking=False):
+            self._json(200, {"ok": False, "journal": "", "erreur": "une opération SSH est déjà en cours : réessaie dans une minute."})
+            return
+        try:
+            client = resumer.ssh_ouvrir(d.get("mdp") or "")
+            try:
+                journal = couper_mac(client, mode)
+            finally:
+                client.close()
+            self._json(200, {"ok": True, "journal": "\n".join(journal)})
+        except SystemExit as exc:  # resumer.ssh_ouvrir signale un refus par sys.exit(message)
+            self._json(200, {"ok": False, "journal": "", "erreur": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"ok": False, "journal": "", "erreur": repr(exc)})
+        finally:
+            _verrou_chargement_mac.release()
 
     def _charger(self):
         d = self._corps()

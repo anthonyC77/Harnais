@@ -300,6 +300,21 @@ def block3_stream_text() -> None:
     check("first finish() emitted the terminators", len(first) >= 2)
 
 
+def block3b_start_before_chunks() -> None:
+    print("\n[3b/5] message_start can be sent before the first chunk")
+    translator = StreamTranslator(model="qwen", message_id="msg_1")
+    first = parse_events(list(translator.start()))
+    check("start() emits message_start", [n for n, _ in first] == ["message_start"], str(first))
+    check("start() is idempotent", list(translator.start()) == [])
+    events = run(translator, [
+        {"choices": [{"delta": {"content": "hi"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ])
+    names = [n for n, _ in events]
+    check("feed() does not repeat message_start", names.count("message_start") == 0, str(names))
+    check("stream still closes properly", names[-1] == "message_stop", str(names))
+
+
 def block4_stream_tools() -> None:
     print("\n[4/5] Streaming, tool calls  (fragmented arguments)")
 
@@ -484,6 +499,7 @@ def main() -> int:
     block1_request()
     block2_response()
     block3_stream_text()
+    block3b_start_before_chunks()
     block4_stream_tools()
     if "--live" in sys.argv:
         block5_live()

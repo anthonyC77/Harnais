@@ -31,10 +31,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 if __package__ in (None, ""):  # allow `python3 bridge/server.py`
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +57,56 @@ PORT = int(os.environ.get("MAC_IA_BRIDGE_PORT", "1235"))
 #: has to clear both or the bridge invents failures the runtime did not have.
 UPSTREAM_TIMEOUT = float(os.environ.get("MAC_IA_TIMEOUT", "600"))
 MAX_BODY = 64 * 1024 * 1024
+#: While the model reads the prompt and then thinks, the runtime sends nothing
+#: that translates to a client-visible event. A client that has seen no bytes
+#: for a few minutes gives up and retries (Claude Code: 5 min), and the retry
+#: queues behind the generation it just abandoned. So the bridge sends a
+#: ``ping`` -- an event the Anthropic format defines and clients ignore --
+#: whenever the stream has been silent this long.
+KEEPALIVE = float(os.environ.get("MAC_IA_KEEPALIVE", "15"))
+
+
+class Battement:
+    """Writes a ``ping`` event whenever nothing has been written for ``intervalle`` seconds.
+
+    ``ecrire`` is the (already thread-safe) writer; ``toucher()`` records that
+    the stream just carried real data. A writer that raises -- the client hung
+    up -- stops the heartbeat silently: the request handler will find out on its
+    own next write, and there is nobody left to report to.
+    """
+
+    def __init__(self, ecrire: Callable[[bytes], None], intervalle: float = KEEPALIVE) -> None:
+        self._ecrire = ecrire
+        self._intervalle = intervalle
+        self._dernier = time.monotonic()
+        self._stop = threading.Event()
+        self._fil: threading.Thread | None = None
+
+    def demarrer(self) -> None:
+        self._fil = threading.Thread(target=self._boucle, name="bridge-keepalive", daemon=True)
+        self._fil.start()
+
+    def toucher(self) -> None:
+        self._dernier = time.monotonic()
+
+    def arreter(self) -> None:
+        self._stop.set()
+        if self._fil is not None:
+            self._fil.join(timeout=self._intervalle + 1)
+
+    def actif(self) -> bool:
+        return self._fil is not None and self._fil.is_alive()
+
+    def _boucle(self) -> None:
+        pas = min(self._intervalle / 4, 1.0)
+        while not self._stop.wait(pas):
+            if time.monotonic() - self._dernier < self._intervalle:
+                continue
+            try:
+                self._ecrire(sse("ping", {"type": "ping"}))
+            except Exception:  # noqa: BLE001 -- client gone; nothing to report to
+                return
+            self._dernier = time.monotonic()
 
 
 def _error_body(message: str, kind: str = "api_error") -> dict[str, Any]:
@@ -109,6 +161,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _open_stream(self) -> None:
+        self._verrou = threading.Lock()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -119,12 +172,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _chunk(self, data: bytes) -> None:
-        self.wfile.write(f"{len(data):X}\r\n".encode("ascii") + data + b"\r\n")
-        self.wfile.flush()
+        # The heartbeat thread writes through here too: one lock per stream.
+        with self._verrou:
+            self.wfile.write(f"{len(data):X}\r\n".encode("ascii") + data + b"\r\n")
+            self.wfile.flush()
 
     def _end_stream(self) -> None:
-        self.wfile.write(b"0\r\n\r\n")
-        self.wfile.flush()
+        with self._verrou:
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
 
     def _read_body(self) -> dict[str, Any] | None:
         length = int(self.headers.get("Content-Length") or 0)
@@ -208,11 +264,20 @@ class Handler(BaseHTTPRequestHandler):
         # an upstream failure can still be reported as a clean HTTP error
         # instead of an empty 200 the client has to interpret.
         self._open_stream()
+        # Open the message now and keep the line warm: the runtime accepted the
+        # request, but it may read the prompt and think for minutes before the
+        # first token, and a silent stream looks like a dead one to the client.
+        battement = Battement(self._chunk, KEEPALIVE)
         try:
+            for event in translator.start():
+                self._chunk(event)
+            battement.demarrer()
             with response:
                 for chunk in _openai_chunks(response):
                     for event in translator.feed(chunk):
                         self._chunk(event)
+                        battement.toucher()
+            battement.arreter()
             for event in translator.finish():
                 self._chunk(event)
         except (BrokenPipeError, ConnectionResetError):
@@ -228,6 +293,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            battement.arreter()
             try:
                 self._end_stream()
             except Exception:  # noqa: BLE001
