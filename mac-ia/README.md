@@ -28,7 +28,8 @@ toujours.
 | Composant | État | Preuve |
 |---|---|---|
 | `router/` — résidence des modèles | **fait** | 3 bascules successives → 1 instance, sans suffixe |
-| `bridge/` — Anthropic ↔ OpenAI | **fait** | 60/60, dont tool calling live en streaming *et* non-streaming |
+| `bridge/` — Anthropic ↔ OpenAI | **fait** | 52/52 + 4 (battement), dont tool calling live en streaming *et* non-streaming |
+| `agent_qwen.py` — Claude Code piloté par Qwen | **fait** | 15 tests hors ligne ; palier live à mesurer (durée du premier tour) |
 | `brain/` — second cerveau | non commencé | bloqué en amont : vault, nom du sas, port 22 |
 | `voice/` — chat VR vocal | non commencé | demande la fenêtre d'installation |
 
@@ -78,7 +79,31 @@ contrôle sera posé. Le serveur avertit sur stderr s'il est bindé ailleurs.
 python3 bridge/server.py                       # 0.0.0.0:1235 -> 127.0.0.1:1234/v1
 python3 tests/test_bridge.py                   # blocs 1-4, aucun modèle requis
 python3 tests/test_bridge.py --live            # + bloc 5, pile complète
+python3 tests/test_bridge_server.py            # le battement, aucun modèle requis
 ```
+
+**Le pont tourne sur le Mac, mais ce dépôt est sur le PC.** Le Mac n'a pas
+Internet, il a le réseau local et SSH. Donc, depuis le PC, une copie à
+chaque fois que `bridge/` change, puis un lancement à distance :
+
+```bash
+scp -r D:/HorusCoachIA/harnais/mac-ia/bridge anthonychassier@192.168.1.50:~/mac-ia/
+ssh anthonychassier@192.168.1.50 "pkill -f bridge/server.py; cd ~/mac-ia && nohup python3 bridge/server.py > bridge.log 2>&1 < /dev/null &"
+curl http://192.168.1.50:1235/health           # {"ok": true, ...}
+```
+
+Le `nohup … &` rend la main tout de suite et le pont survit à la fermeture du
+terminal ; ses lignes vont dans `~/mac-ia/bridge.log` sur le Mac. Le `pkill`
+arrête le pont précédent, sinon le port 1235 est pris.
+
+**Le battement.** Pendant que le modèle relit le prompt puis réfléchit, LM
+Studio n'émet rien qui se traduise en texte. Un client qui ne reçoit aucun
+octet pendant cinq minutes coupe et relance (Claude Code), et la relance fait
+la queue derrière la génération qu'il vient d'abandonner. Le pont ouvre donc
+le message dès que LM Studio a accepté la requête, puis envoie un événement
+`ping` toutes les 15 s de silence (`MAC_IA_KEEPALIVE`). Le format Anthropic
+prévoit cet événement, les clients l'ignorent. `tests/test_bridge_server.py`
+le couvre, sans modèle.
 
 Puis, côté client :
 
@@ -114,12 +139,64 @@ C'est là tout l'intérêt du découpage. Un échec en 1–4 est un bug **ici**.
 modèle, Context Length, KV quantisation — et il n'y a aucune raison de relire la
 traduction.
 
+## agent — Claude Code piloté par Qwen
+
+```powershell
+C:\Python311\python.exe agent_qwen.py                 # dans le projet courant
+C:\Python311\python.exe agent_qwen.py -- --continue   # tout ce qui suit -- va à claude
+python tests/test_agent_qwen.py                       # 15 tests, aucun Mac requis
+```
+
+**Ce que c'est.** Claude Code reste sur le PC : il lit, écrit, lance des
+commandes dans le projet. Seule l'adresse du modèle change : `ANTHROPIC_BASE_URL`
+pointe vers le pont, qui traduit vers LM Studio. Le stagiaire ne bouge pas, on
+change le numéro du senior qu'il appelle.
+
+**Ce que le lanceur vérifie avant d'ouvrir `claude`, et pourquoi.** Il n'y a
+**aucune bascule automatique** : Mac éteint, la session plante au premier tour,
+elle ne repasse pas chez Anthropic. Donc, dans l'ordre : le pont répond sur
+`/health` (sinon diagnostic en une ligne et code 2, `claude` n'est pas lancé),
+puis `brain` est résident (même chemin que `resumer.py` : HTTP, SSH seulement
+si besoin). Le pont passe le nom de modèle **tel quel** à LM Studio, donc le
+lanceur épingle `brain` sur tous les alias (`ANTHROPIC_MODEL`,
+`ANTHROPIC_DEFAULT_*_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`) — sans ça LM Studio
+reçoit `claude-sonnet-…`. Il pose aussi un `ANTHROPIC_AUTH_TOKEN` factice :
+le pont n'authentifie pas, et c'est ce qui empêche le jeton claude.ai de
+partir sur le LAN. Une vraie `ANTHROPIC_API_KEY` du shell est retirée.
+
+**Choisir Qwen ou Anthropic dans VS Code.** Deux profils de terminal au niveau
+utilisateur (`%APPDATA%\Code\User\settings.json`,
+`terminal.integrated.profiles.windows`) : « Claude · Anthropic » lance `claude`
+nu, « Claude · Qwen (Mac) » lance `agent_qwen.py`. Menu « + » du terminal,
+l'un ou l'autre, dans le dossier du projet ouvert. Deux terminaux, deux
+numéros ; le panneau de l'extension Claude Code reste sur Anthropic, son seul
+réglage d'environnement est global. Hors VS Code : `Lancer Qwen agent.bat`.
+
+**Ce qu'il faut savoir avant de s'en servir.** `brain` réfléchit avant chaque
+réponse et le prompt système de Claude Code fait plusieurs milliers de tokens
+à relire à chaque tour : compter des minutes par tour, pas des secondes. Et
+`brain` est chargé à 65 536 tokens de contexte alors que Claude Code compacte en
+supposant 200k : sur une longue session, c'est LM Studio qui déborde, et la
+troncature casse le tool calling (`LIAISON_HERMES_MAC.md` §5.2). Parade :
+`/compact` tôt. Le pont jette `thinking`, `cache_control` et `output_config`,
+c'est voulu ; le lanceur pose `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` et
+`CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` pour ne pas les envoyer. Enfin il
+porte `CLAUDE_STREAM_IDLE_TIMEOUT_MS` et `API_TIMEOUT_MS` à 30 minutes : sans
+ça, Claude Code coupe un tour muet au bout de 5 minutes et le relance, et la
+relance fait la queue derrière la génération abandonnée (« will retry in
+2m »). LM Studio ne sert qu'une requête à la fois par modèle : le chat web
+(`qwen_web.py`) et une session Claude Code se font attendre l'un l'autre.
+
 ## Diagnostic
 
 | Symptôme | Couche | La commande qui tranche |
 |---|---|---|
 | Hermes : `model not found`, sans rien avoir touché | profil basculé sous ses pieds | `python3 router/profiles.py status` |
 | `model not found` une heure après le démarrage | double instance `…:2` (§4.5) | `lms ps --json` |
+| Claude Code : `connexion refusée` vers `:1235` au premier tour | pont non lancé, ou Mac éteint | `agent_qwen.py` le dit avant d'ouvrir `claude` ; sinon `ping 192.168.1.50` |
+| Claude Code : « Waiting for API response · will retry in 2m » | flux muet > 5 min (pont sans battement ou lanceur sans délais), ou modèle occupé par une autre requête | `curl` un `/v1/messages` minuscule : plus de 30 s pour un « OK », c'est la queue |
+| Le chat web ou Claude Code rament sans raison | file de requêtes fantômes sur LM Studio (session coupée) | bouton « Couper la file » de `qwen_web.py`, ou `curl` minuscule sur `/v1/chat/completions` : plus d'une seconde pour un « OK », c'est la queue |
+| Claude Code : `model not found` | `brain` non résident, ou profil basculé sous ses pieds | `python3 router/profiles.py status` |
 | Le pont renvoie du texte au lieu d'un `tool_use` | traduction, ou modèle sans tool calling | `tests/test_bridge.py` bloc 4, puis `--live` |
 | Le client attend indéfiniment en streaming | message jamais fermé | vérifier que `message_stop` est émis |
 | `pip install` échoue sur le Mac | c'est normal — machine hors ligne | `route -n get default` |

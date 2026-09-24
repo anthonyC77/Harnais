@@ -47,6 +47,7 @@ eval/passation.py   derrière les hooks passation-*, sh et ps1     → le noyau
 eval/schemas/candidat.schema.json   une ligne de la file de candidats   → le noyau
 claude/skills/capitaliser   la revue hebdomadaire de la boucle        → le noyau
 mac-ia/             routeur, pont Anthropic→OpenAI, brain : le LLM local
+                    agent_qwen.py : Claude Code piloté par Qwen, depuis VS Code
                     → infrastructure : se lance d'ici, ne se pose nulle part
 
 modele/             ce qu'un projet copie UNE fois puis fait sien
