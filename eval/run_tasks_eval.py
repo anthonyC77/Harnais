@@ -61,10 +61,10 @@ def load_json(path):
         return json.load(f)
 
 
-def load_schemas(schemas_dir):
+def load_schemas(schemas_dir, tools_dir=None):
     contract = load_json(os.path.join(schemas_dir, "run_contract.schema.json"))
     tools = {}
-    tdir = os.path.join(schemas_dir, "tools")
+    tdir = tools_dir or os.path.join(schemas_dir, "tools")
     for fn in sorted(os.listdir(tdir)):
         if fn.endswith(".schema.json"):
             s = load_json(os.path.join(tdir, fn))
@@ -287,6 +287,7 @@ def main(argv=None):
     p.add_argument("--golden", default=DEFAULT_GOLDEN)
     p.add_argument("--baseline", default=DEFAULT_BASELINE)
     p.add_argument("--schemas", default=DEFAULT_SCHEMAS)
+    p.add_argument("--tools", help="Dossier des schémas d'outils (défaut : <schemas>/tools)")
     p.add_argument("--policy", default=DEFAULT_POLICY)
     p.add_argument("--runs-dir", default=DEFAULT_RUNS_DIR)
     j = p.add_mutually_exclusive_group()
@@ -303,7 +304,7 @@ def main(argv=None):
     try:
         golden = load_jsonl(a.golden)
         runs = {r.get("task_id"): r for r in load_jsonl(a.runs)}
-        contract, tools = load_schemas(a.schemas)
+        contract, tools = load_schemas(a.schemas, a.tools)
         policies = load_json(a.policy) if os.path.exists(a.policy) else {"agents": {}}
         judge_file = {v["task_id"]: v for v in load_jsonl(a.judge_file)} if a.judge_file else {}
     except (OSError, ValueError, KeyError) as e:

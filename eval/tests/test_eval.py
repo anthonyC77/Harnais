@@ -11,7 +11,16 @@ def _etalon(nom):
     return chemin if os.path.exists(chemin) else os.path.join(PROJECT, "modele", "eval", nom)
 
 
+def _outils(projet, fixture):
+    """Les schémas d'outils (ou leurs sources C#) du projet — ou le jeu d'essai, quand la suite tourne dans le harnais lui-même."""
+    if os.path.isdir(projet) and os.listdir(projet):
+        return projet
+    return os.path.join(EVAL, "fixtures", "outils", fixture)
+
+
 GOLDEN = _etalon("tasks_golden.jsonl")
+OUTILS = _outils(os.path.join(EVAL, "schemas", "tools"), "schemas")
+CONTRATS = _outils(os.path.join(PROJECT, "src", "Horus.Tools", "Contracts"), "Contracts")
 POLICY = _etalon(os.path.join("policy", "agents.json"))
 RUNS = os.path.join(EVAL, "fixtures", "runs_tasks.jsonl")
 
@@ -33,7 +42,8 @@ class RetrievalOracle(unittest.TestCase):
 
     def test_cli_from_file_offline(self):
         with tempfile.TemporaryDirectory() as d:
-            code = run_eval.main(["--from-file", os.path.join(EVAL, "fixtures", "results_retrieval.jsonl"), "--runs-dir", d, "--quiet"])
+            code = run_eval.main(["--from-file", os.path.join(EVAL, "fixtures", "results_retrieval.jsonl"), "--runs-dir", d, "--quiet",
+                                  "--golden", _etalon("golden_set.jsonl"), "--baseline", _etalon("baseline.json")])
             self.assertIn(code, (0, 1)); self.assertEqual(len(os.listdir(d)), 1)
 
     def test_cli_missing_file_is_exit_2(self):
@@ -43,7 +53,7 @@ class RetrievalOracle(unittest.TestCase):
 class TasksOracle(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.contract, cls.tools = run_tasks_eval.load_schemas(os.path.join(EVAL, "schemas"))
+        cls.contract, cls.tools = run_tasks_eval.load_schemas(os.path.join(EVAL, "schemas"), OUTILS)
         cls.policies = run_tasks_eval.load_json(POLICY)
         cls.golden = {t["id"]: t for t in run_tasks_eval.load_jsonl(GOLDEN)}
         cls.runs = {r["task_id"]: r for r in run_tasks_eval.load_jsonl(os.path.join(EVAL, "fixtures", "runs_tasks.jsonl"))}
@@ -79,7 +89,7 @@ class TasksOracle(unittest.TestCase):
 
     def test_cli_with_judge_file(self):
         with tempfile.TemporaryDirectory() as d:
-            code = run_tasks_eval.main(["--runs", os.path.join(EVAL, "fixtures", "runs_tasks.jsonl"), "--golden", GOLDEN, "--policy", POLICY, "--judge-file", os.path.join(EVAL, "fixtures", "judge.jsonl"), "--runs-dir", d, "--quiet"])
+            code = run_tasks_eval.main(["--runs", os.path.join(EVAL, "fixtures", "runs_tasks.jsonl"), "--golden", GOLDEN, "--policy", POLICY, "--tools", OUTILS, "--judge-file", os.path.join(EVAL, "fixtures", "judge.jsonl"), "--runs-dir", d, "--quiet"])
             self.assertIn(code, (0, 1))
             out = json.load(open(os.path.join(d, os.listdir(d)[0]), encoding="utf-8"))
             self.assertEqual(out["metrics"]["n_judged"], 10); self.assertIsNotNone(out["metrics"]["agreement"])
@@ -87,7 +97,7 @@ class TasksOracle(unittest.TestCase):
     def test_judge_cmd_contract(self):
         cmd = f"{sys.executable} -c \"import sys,json; d=json.load(sys.stdin); print(json.dumps({{'pass': 'rubric' in d, 'reason': 'ok'}}))\""
         with tempfile.TemporaryDirectory() as d:
-            self.assertIn(run_tasks_eval.main(["--runs", os.path.join(EVAL, "fixtures", "runs_tasks.jsonl"), "--golden", GOLDEN, "--policy", POLICY, "--judge-cmd", cmd, "--runs-dir", d, "--quiet"]), (0, 1))
+            self.assertIn(run_tasks_eval.main(["--runs", os.path.join(EVAL, "fixtures", "runs_tasks.jsonl"), "--golden", GOLDEN, "--policy", POLICY, "--tools", OUTILS, "--judge-cmd", cmd, "--runs-dir", d, "--quiet"]), (0, 1))
 
 
 class JugeParCas(unittest.TestCase):
@@ -105,7 +115,7 @@ class JugeParCas(unittest.TestCase):
                 f.write(self.JUGE)
             # sans guillemets : les chemins sont sans espace, et cmd.exe digère mal deux paires de guillemets
             cmd = " ".join([sys.executable, juge, *cas_en_panne])
-            code = run_tasks_eval.main(["--runs", RUNS, "--golden", GOLDEN, "--policy", POLICY,
+            code = run_tasks_eval.main(["--runs", RUNS, "--golden", GOLDEN, "--policy", POLICY, "--tools", OUTILS,
                                        "--baseline", os.path.join(d, "absent.json"),
                                        "--judge-cmd", cmd, "--runs-dir", d, "--quiet"])
             rapports = [f for f in os.listdir(d) if f.endswith(".json")]
@@ -222,11 +232,11 @@ class JugeLocal(unittest.TestCase):
 class ToolIsAType(unittest.TestCase):
     def test_schema_drift_detected_when_type_changes(self):
         with tempfile.TemporaryDirectory() as d:
-            src = os.path.join(d, "src", "Horus.Tools", "Contracts"); shutil.copytree(os.path.join(PROJECT, "src", "Horus.Tools", "Contracts"), src)
-            sch = os.path.join(d, "schemas"); shutil.copytree(os.path.join(EVAL, "schemas", "tools"), sch)
+            src = os.path.join(d, "src", "Horus.Tools", "Contracts"); shutil.copytree(CONTRATS, src)
+            sch = os.path.join(d, "schemas"); shutil.copytree(OUTILS, sch)
             cs = os.path.join(src, "RechercherDocuments.cs"); txt = open(cs, encoding="utf-8").read()
             open(cs, "w", encoding="utf-8").write(txt.replace("int K = 5", "int K = 7"))
-            problems, _ = check_tool_schemas.check(sch, os.path.join(EVAL, "tasks_golden.jsonl"), src, False)
+            problems, _ = check_tool_schemas.check(sch, GOLDEN, src, False)
             # x-source est relatif au projet : la source ne bouge pas là, mais la régénération diverge
             self.assertTrue(any(p["kind"] == "drift" for p in problems))
 
@@ -235,7 +245,7 @@ class ToolIsAType(unittest.TestCase):
         self.assertFalse(jsonschema_lite.property_exists(self.schema("rechercher_documents")["input"], "page"))
 
     def schema(self, name):
-        return json.load(open(os.path.join(EVAL, "schemas", "tools", f"{name}.schema.json"), encoding="utf-8"))
+        return json.load(open(os.path.join(OUTILS, f"{name}.schema.json"), encoding="utf-8"))
 
 
 class SchemaLite(unittest.TestCase):

@@ -61,8 +61,11 @@ def verifier_evenements(entete, evenements, schema, nom="<événements>"):
             refus(f"ligne {ligne} : trou dans seq, attendu {i}, reçu {e['seq']}")
         if e["run"] != entete["run_id"]:
             refus(f"ligne {ligne} : run {e['run']!r} ne correspond pas au run_id de l'en-tête")
-    if sum(1 for e in evenements if e["kind"] == "run.start") != 1:
-        refus("plus d'un run.start dans le fichier")
+    debuts = sum(1 for e in evenements if e["kind"] == "run.start")
+    if debuts == 0:
+        refus("aucun run.start dans le fichier")
+    if debuts > 1:
+        refus(f"{debuts} run.start dans le fichier, un seul attendu")
     if evenements[0]["kind"] != "run.start":
         refus("le premier événement n'est pas run.start")
     if evenements[-1]["kind"] != "run.end":
