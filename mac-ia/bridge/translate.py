@@ -142,6 +142,12 @@ def _tool_result_messages(blocks: list[Any]) -> list[dict[str, Any]]:
         text = body if isinstance(body, str) else _text_of(body)
         if block.get("is_error"):
             text = f"Error: {text}"
+        shown = len(_images_of(body))
+        if shown:
+            # The pixels travel in the user message that follows (see
+            # _tool_result_images); say so, or an image-only result reads as empty.
+            note = f"[{shown} image(s) returned: attached in the next message]"
+            text = f"{text}\n{note}" if text else note
         messages.append(
             {
                 "role": "tool",
@@ -150,6 +156,38 @@ def _tool_result_messages(blocks: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return messages
+
+
+TOOL_IMAGES_NOTE = "Images returned by the tool calls above:"
+
+
+def _images_of(content: Any) -> list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return []
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "image":
+            part = _image_part(block)
+            if part:
+                parts.append(part)
+    return parts
+
+
+def _tool_result_images(blocks: list[Any]) -> list[dict[str, Any]]:
+    """Images carried inside ``tool_result`` blocks, as OpenAI image parts.
+
+    A ``role: "tool"`` message is text only for most OpenAI-compatible runtimes,
+    LM Studio included, so the images cannot stay where Anthropic put them.
+    Dropping them is what made a vision model blind to its own screenshots and
+    to every image file it read. They ride instead in a user message placed
+    right after the tool messages -- after all of them, since OpenAI wants the
+    tool messages to follow the assistant turn with nothing in between.
+    """
+    parts: list[dict[str, Any]] = []
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            parts.extend(_images_of(block.get("content")))
+    return parts
 
 
 def _assistant_message(blocks: list[Any]) -> dict[str, Any]:
@@ -229,12 +267,21 @@ def to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
         # between.
         tool_messages = _tool_result_messages(blocks)
         messages.extend(tool_messages)
+        tool_images = _tool_result_images(blocks)
         remaining = [
             b for b in blocks
             if not (isinstance(b, dict) and b.get("type") == "tool_result")
         ]
-        if remaining:
-            user_content = _user_content(remaining)
+        user_content = _user_content(remaining) if remaining else ""
+        if tool_images:
+            parts: list[dict[str, Any]] = [{"type": "text", "text": TOOL_IMAGES_NOTE}]
+            parts.extend(tool_images)
+            if isinstance(user_content, list):
+                parts.extend(user_content)
+            elif user_content:
+                parts.append({"type": "text", "text": user_content})
+            messages.append({"role": "user", "content": parts})
+        elif remaining:
             if user_content:
                 messages.append({"role": "user", "content": user_content})
         elif not tool_messages:

@@ -12,7 +12,7 @@ Réglages par conversation : réflexion on/off (bloc <think> vide pré-rempli), 
 
 Audio : un bouton micro (ou un fichier audio déposé) est transcrit sur le PC par Whisper, en réutilisant
 l'outil D:\\AudioToTxt\\stt\\transcrire.py (faster-whisper, GPU puis CPU). Le modèle Whisper est chargé
-au premier usage puis reste en mémoire. Lancer avec le Python qui a faster-whisper (C:\\Python311).
+en arrière-plan dès le démarrage (~40 s) puis reste en mémoire. Lancer avec le Python qui a faster-whisper (C:\\Python311).
 
 Le bouton « Charger brain » ouvre un SSH avec le mot de passe (une fois) via resumer.py si le modèle
 n'est pas résident. Le bouton « Couper la file » ouvre le même SSH pour libérer LM Studio d'une
@@ -833,7 +833,7 @@ def titre_journal(fichier):
 
 
 # ---------------------------------------------------------------------------------------------------
-# Transcription : Whisper chargé une fois (au premier usage), en réutilisant l'outil stt.
+# Transcription : Whisper chargé une fois (au démarrage, en arrière-plan), en réutilisant l'outil stt.
 
 _whisper = {"modele": None, "etat": "pret", "erreur": "", "verrou": threading.Lock()}
 _verrou_transcription = threading.Lock()   # une transcription à la fois : le GPU n'en fait pas deux plus vite
@@ -899,6 +899,13 @@ def charger_whisper():
             _whisper["etat"], _whisper["erreur"] = "absent", str(exc) or repr(exc)
             raise RuntimeError(_whisper["erreur"]) from exc
         return _whisper["modele"]
+
+
+def _ignorer_echec(fonction):
+    try:
+        fonction()
+    except RuntimeError:
+        pass
 
 
 def transcrire_audio(octets, suffixe, modele=None):
@@ -1173,6 +1180,10 @@ def main():
         for ip in adresses_locales():
             print(f"  depuis un autre appareil de la maison : http://{ip}:{args.port}")
         print("  (micro et boutons Copier : seulement en http://localhost ou en HTTPS, les navigateurs l'imposent)")
+    if STT_DOSSIER.is_dir():
+        # Whisper met ~40 s à charger : on le fait pendant qu'on ouvre la page, pas au premier clic sur Dicter.
+        # Un échec reste visible dans la page (pastille Whisper) : charger_whisper l'a déjà noté dans _whisper.
+        threading.Thread(target=lambda: _ignorer_echec(charger_whisper), daemon=True).start()
     if not args.sans_navigateur:
         webbrowser.open(url)
     try:

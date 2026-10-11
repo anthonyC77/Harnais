@@ -193,6 +193,53 @@ def block1_request() -> None:
           isinstance(parts, list)
           and parts[1]["image_url"]["url"] == "data:image/png;base64,AAA", str(parts))
 
+    # A screenshot tool (Blender `look`, Claude Code `Read` on a .png) returns its
+    # image inside the tool_result. A tool message is text only, so the pixels
+    # must follow in a user message -- after every tool message -- not vanish.
+    png = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "BBB"}}
+    out = to_openai_request(
+        {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "c1", "name": "look", "input": {}},
+                        {"type": "tool_use", "id": "c2", "name": "scene", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "c1", "content": [png]},
+                        {"type": "tool_result", "tool_use_id": "c2", "content": "3 objects"},
+                        {"type": "text", "text": "now fix it"},
+                    ],
+                },
+            ],
+        }
+    )
+    roles = [m["role"] for m in out["messages"]]
+    check("tool-result image: roles assistant, tool, tool, user",
+          roles == ["assistant", "tool", "tool", "user"], str(roles))
+    check("tool-result image: image-only result says the image follows",
+          "attached in the next message" in out["messages"][1]["content"],
+          str(out["messages"][1]))
+    tail = out["messages"][3]["content"]
+    urls = [p["image_url"]["url"] for p in tail if isinstance(p, dict) and p.get("type") == "image_url"]
+    texts = [p["text"] for p in tail if isinstance(p, dict) and p.get("type") == "text"]
+    check("tool-result image travels as image_url in the next user message",
+          urls == ["data:image/png;base64,BBB"], str(tail))
+    check("tool-result image: the user's own text is kept after it",
+          texts[-1] == "now fix it", str(texts))
+
+    out = to_openai_request({"model": "m", "messages": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "c", "name": "f", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c", "content": "ok"}]},
+    ]})
+    check("text-only tool result adds no user message",
+          [m["role"] for m in out["messages"]] == ["assistant", "tool"], str(out["messages"]))
+
     out = to_openai_request({"model": "m", "messages": [], "thinking": {"type": "adaptive"},
                              "output_config": {"effort": "high"}})
     check("thinking / output_config are dropped, not forwarded",
