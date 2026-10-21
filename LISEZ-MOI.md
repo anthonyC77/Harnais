@@ -12,10 +12,16 @@ mesurer la dérive en sont un.
 ## Poser le harnais
 
 ```powershell
-python3 harnais.py installer --projet ..\coachingia --hooks ps1
+python3 harnais.py installer --projet ..\oneiros --hooks sh
+python3 harnais.py installer --projet ..\coachingia --hooks ps1 --profil boucle
 python3 harnais.py verifier  --projet ..\coachingia
 python3 harnais.py etat
 ```
+
+`--profil boucle` ne pose que la boucle d'apprentissage (passations, mesure,
+`/capitaliser`) : le reste du noyau est écrit pour oneiros, et ses consignes
+seraient fausses ailleurs. Le profil est inscrit dans `.harnais`, `verifier` ne
+mesure que lui.
 
 `--hooks ps1` sur un poste sans `jq`, `--hooks sh` ailleurs. Ce n'est pas un
 détail de confort : **sans `jq`, les trois gardes en shell sortent en code 0**,
@@ -159,7 +165,8 @@ Le harnais ne s'impose pas : il se pose là où il a un référent.
 | Projet | Prend | Pourquoi |
 |---|---|---|
 | **oneiros** | le noyau entier, gardes `sh` | c'est sa maison d'origine ; les oracles y ont un objet à mesurer |
-| **coachingia** | **rien pour l'instant** | il n'a ni retrieval ni orchestrateur. Reposer `eval/*.py` à sa racine recréerait la collision `eval/` ↔ `evals/` soldée le 12 septembre, où quatre étapes de CI passaient au vert grâce à des fixtures. Ses agents, gardes et règles sont déjà adaptés — en PowerShell. Sa copie d'archive dort sous `_horus/`. |
+| **coachingia** | **la boucle seule** (`--profil boucle`, passations `ps1`), depuis le 14 octobre | il n'a ni retrieval ni orchestrateur : les oracles n'y mesureraient rien, et reposer tout `eval/*.py` recréerait la collision `eval/` ↔ `evals/` soldée le 12 septembre, où quatre étapes de CI passaient au vert grâce à des fixtures. Son `eval/` ne porte que les six fichiers de la boucle. Ses agents, gardes et règles sont déjà adaptés — en PowerShell. Sa copie d'archive dort sous `_horus/`. |
+| **ruche** | **la boucle seule** (`--profil boucle`, passations `sh`), depuis le 14 octobre | TypeScript : les oracles n'y ont pas d'objet, et les agents et gardes du noyau sont ceux d'oneiros. Le dépôt est public : `.claude/apprentissage/` y est ignoré par git. |
 | **notes** | rien | ce n'est pas du code |
 
 La question à se poser avant de poser le harnais n'est pas « est-ce que ça
@@ -186,3 +193,10 @@ pour que ça ne revienne pas par un simple `git checkout` sur Windows.
 Note au passage : `installer` a refusé d'écraser les deux fichiers, parce qu'ils
 différaient de la source. C'est le comportement voulu — il a fallu `--forcer`.
 Un installateur qui écrase sans demander ne vaut pas mieux qu'une copie.
+
+Le 14 octobre, après le re-clonage du 11, `verifier` déclarait 22 fichiers
+d'oneiros « modifiés sur place » : git les avait simplement ressortis en CRLF.
+L'empreinte ignore désormais les fins de ligne, et `installer` ne réécrit plus un
+fichier identique. Sur ce poste, les gardes `.sh` d'oneiros restent en CRLF dans
+l'arbre de travail (autocrlf) et en LF dans l'index ; Git Bash le tolère (34
+sondes sur 34).

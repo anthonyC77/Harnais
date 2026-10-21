@@ -7,7 +7,8 @@ trois copies étaient pourtant le même artefact — la divergence était un
 chercher-remplacer. Une copie n'est pas un problème ; une copie dont on ne peut
 pas mesurer la dérive en est un.
 
-    python3 harnais.py installer --projet ../coachingia --hooks ps1
+    python3 harnais.py installer --projet ../oneiros --hooks sh
+    python3 harnais.py installer --projet ../coachingia --hooks ps1 --profil boucle
     python3 harnais.py verifier  --projet ../coachingia
     python3 harnais.py etat
 
@@ -68,6 +69,24 @@ NOYAU: list[tuple[str, str]] = [
     ("eval/fixtures", "eval/fixtures"),
 ]
 
+# La boucle d'apprentissage seule. Elle lit les sessions Claude Code, pas le code :
+# elle vaut partout où l'on travaille avec Claude. Le reste du noyau est écrit pour
+# oneiros — le codeur lance `cd oneiros && python -m pytest`, les gardes protègent
+# oneiros/SPEC.md — et posé ailleurs il donnerait de fausses consignes. D'où ce
+# profil, pour coachingia et ruche (décision du 14 octobre 2026).
+BOUCLE: list[tuple[str, str]] = [
+    ("claude/skills/capitaliser", ".claude/skills/capitaliser"),
+    ("eval/lire_transcripts.py", "eval/lire_transcripts.py"),
+    ("eval/mesurer_sessions.py", "eval/mesurer_sessions.py"),
+    ("eval/extraire_candidats.py", "eval/extraire_candidats.py"),
+    ("eval/passation.py", "eval/passation.py"),
+    ("eval/jsonschema_lite.py", "eval/jsonschema_lite.py"),
+    ("eval/consigne-extraction.md", "eval/consigne-extraction.md"),
+    ("eval/schemas/candidat.schema.json", "eval/schemas/candidat.schema.json"),
+]
+
+PROFILS = {"complet": NOYAU, "boucle": BOUCLE}
+
 # Jamais écrasé par `installer`. Ce sont les étalons : ils se signent, ils ne
 # se distribuent pas.
 AU_PROJET = [
@@ -82,13 +101,16 @@ AU_PROJET = [
 
 
 def empreinte(chemin: Path) -> str:
-    return hashlib.sha256(chemin.read_bytes()).hexdigest()[:16]
+    # Fins de ligne neutralisées : sous Windows, git (autocrlf) ressort le noyau
+    # en CRLF à chaque clone, et une empreinte sur les octets bruts le déclarait
+    # alors « modifié sur place » — 22 faux positifs sur oneiros le 14 octobre.
+    return hashlib.sha256(chemin.read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:16]
 
 
-def fichiers_du_noyau() -> dict[str, Path]:
+def fichiers_du_noyau(profil: str = "complet") -> dict[str, Path]:
     """Chemin de destination → fichier source, à plat."""
     out: dict[str, Path] = {}
-    for source, dest in NOYAU:
+    for source, dest in PROFILS[profil]:
         src = RACINE / source
         if src.is_file():
             out[dest] = src
@@ -99,10 +121,10 @@ def fichiers_du_noyau() -> dict[str, Path]:
     return out
 
 
-def version_du_noyau() -> str:
+def version_du_noyau(profil: str = "complet") -> str:
     """Une empreinte du noyau entier : elle change dès qu'un fichier change."""
     h = hashlib.sha256()
-    for dest, src in sorted(fichiers_du_noyau().items()):
+    for dest, src in sorted(fichiers_du_noyau(profil).items()):
         h.update(dest.encode())
         h.update(empreinte(src).encode())
     return h.hexdigest()[:12]
@@ -110,15 +132,18 @@ def version_du_noyau() -> str:
 
 # ── installer ────────────────────────────────────────────────────────────────
 
-def installer(projet: Path, hooks: str, forcer: bool) -> int:
+def installer(projet: Path, hooks: str, forcer: bool, profil: str = "complet") -> int:
     if not projet.is_dir():
         print(f"projet introuvable : {projet}", file=sys.stderr)
         return 2
 
-    pose, gardes = [], []
-    for dest, src in sorted(fichiers_du_noyau().items()):
+    pose, gardes, a_jour = [], [], 0
+    for dest, src in sorted(fichiers_du_noyau(profil).items()):
         cible = projet / dest
-        if cible.exists() and not forcer and empreinte(cible) != empreinte(src):
+        if cible.exists() and empreinte(cible) == empreinte(src):
+            a_jour += 1                     # le recopier ne changerait que ses fins de ligne
+            continue
+        if cible.exists() and not forcer:
             gardes.append(dest)
             continue
         cible.parent.mkdir(parents=True, exist_ok=True)
@@ -129,15 +154,20 @@ def installer(projet: Path, hooks: str, forcer: bool) -> int:
     # poste décide. CoachingIA a réécrit les trois gardes en PowerShell parce
     # que `jq` n'est pas installé — et sans `jq` les versions shell sortaient
     # en code 0, c'est-à-dire qu'elles autorisaient tout, en silence.
+    # Le profil boucle ne prend que les passations : les gardes sont celles
+    # d'oneiros (sh) et de coachingia (ps1), pas celles du projet qui reçoit.
     dossier_hooks = RACINE / "claude" / "hooks" / hooks
     if not dossier_hooks.is_dir():
         print(f"langage de hooks inconnu : {hooks} (sh ou ps1)", file=sys.stderr)
         return 2
     for f in sorted(dossier_hooks.iterdir()):
-        if not f.is_file():
+        if not f.is_file() or (profil == "boucle" and not f.name.startswith("passation-")):
             continue
         cible = projet / ".claude" / "hooks" / f.name
-        if cible.exists() and not forcer and empreinte(cible) != empreinte(f):
+        if cible.exists() and empreinte(cible) == empreinte(f):
+            a_jour += 1
+            continue
+        if cible.exists() and not forcer:
             gardes.append(f".claude/hooks/{f.name}")
             continue
         cible.parent.mkdir(parents=True, exist_ok=True)
@@ -145,16 +175,17 @@ def installer(projet: Path, hooks: str, forcer: bool) -> int:
         pose.append(f".claude/hooks/{f.name}")
 
     marque = {
-        "version": version_du_noyau(),
+        "version": version_du_noyau(profil),
+        "profil": profil,
         "hooks": hooks,
         "pose_le": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "fichiers": {d: empreinte(s) for d, s in sorted(fichiers_du_noyau().items())},
+        "fichiers": {d: empreinte(s) for d, s in sorted(fichiers_du_noyau(profil).items())},
     }
     (projet / MARQUEUR).write_text(
         json.dumps(marque, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    print(f"harnais {marque['version']} posé dans {projet}  (hooks : {hooks})")
-    print(f"  {len(pose)} fichier(s) écrit(s)")
+    print(f"harnais {marque['version']} posé dans {projet}  (profil : {profil}, hooks : {hooks})")
+    print(f"  {len(pose)} fichier(s) écrit(s), {a_jour} déjà à jour")
     if gardes:
         print(f"  {len(gardes)} fichier(s) gardé(s), ils diffèrent localement "
               f"— `--forcer` pour écraser, `verifier` pour voir :")
@@ -176,7 +207,8 @@ def verifier(projet: Path, bavard: bool = True) -> tuple[int, str]:
         return 2, "sans harnais"
 
     marque = json.loads(marqueur.read_text(encoding="utf-8"))
-    actuel = fichiers_du_noyau()
+    profil = marque.get("profil", "complet")    # les poses d'avant les profils étaient complètes
+    actuel = fichiers_du_noyau(profil)
     absents, modifies, obsoletes = [], [], []
 
     for dest, src in sorted(actuel.items()):
@@ -193,8 +225,9 @@ def verifier(projet: Path, bavard: bool = True) -> tuple[int, str]:
 
     if bavard:
         print(f"{projet}")
-        print(f"  posé   : {marque['version']} le {marque['pose_le']} (hooks : {marque['hooks']})")
-        print(f"  source : {version_du_noyau()}")
+        print(f"  posé   : {marque['version']} le {marque['pose_le']} "
+              f"(profil : {profil}, hooks : {marque['hooks']})")
+        print(f"  source : {version_du_noyau(profil)}")
         for titre, liste in (("absent", absents), ("modifié sur place", modifies),
                              ("en retard sur la source", obsoletes)):
             for f in liste:
@@ -219,13 +252,14 @@ def etat(classeur: Path) -> int:
         print(f"  posez-le avec : python3 harnais.py installer --projet <dossier>")
         return 0
 
-    print(f"noyau : {version_du_noyau()}\n")
+    print(f"noyau : {version_du_noyau()}   boucle : {version_du_noyau('boucle')}\n")
     pire = 0
     for p in projets:
         code, resume = verifier(p, bavard=False)
         marque = json.loads((p / MARQUEUR).read_text(encoding="utf-8"))
         drapeau = "  " if code == 0 else "! "
-        print(f"{drapeau}{p.name:24} {marque['version']}  {marque['hooks']:4} {resume}")
+        print(f"{drapeau}{p.name:24} {marque['version']}  {marque.get('profil', 'complet'):8} "
+              f"{marque['hooks']:4} {resume}")
         pire = max(pire, code)
     return pire
 
@@ -240,6 +274,8 @@ def main() -> int:
                    help="langage des gardes : sh (jq requis) ou ps1 (Windows)")
     i.add_argument("--forcer", action="store_true",
                    help="écraser les fichiers du noyau modifiés sur place")
+    i.add_argument("--profil", default="complet", choices=sorted(PROFILS),
+                   help="complet : le noyau entier ; boucle : la boucle d'apprentissage seule")
 
     v = sous.add_parser("verifier", help="dire ce qui a dérivé dans un projet")
     v.add_argument("--projet", required=True, type=Path)
@@ -249,7 +285,7 @@ def main() -> int:
 
     a = p.parse_args()
     if a.commande == "installer":
-        return installer(a.projet.resolve(), a.hooks, a.forcer)
+        return installer(a.projet.resolve(), a.hooks, a.forcer, a.profil)
     if a.commande == "verifier":
         return verifier(a.projet.resolve())[0]
     return etat(a.classeur.resolve())
