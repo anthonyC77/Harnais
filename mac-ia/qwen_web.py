@@ -474,7 +474,7 @@ function copier(texte) {
 function ajouterMessage(role, texte, piecesJointes) {
   $('vide').hidden = true;
   const m = document.createElement('div'); m.className = 'msg ' + role;
-  const qui = document.createElement('div'); qui.className = 'qui'; qui.textContent = role === 'user' ? 'Toi' : 'Qwen'; m.appendChild(qui);
+  const qui = document.createElement('div'); qui.className = 'qui'; qui.textContent = role === 'user' ? 'Toi' : 'Agent IA locale'; m.appendChild(qui);
   if (role === 'user') {
     const b = document.createElement('div'); b.className = 'bulle'; b.textContent = texte;
     if (piecesJointes && piecesJointes.length) { const p = document.createElement('div'); for (const pj of piecesJointes) { const s = document.createElement('span'); s.className = 'piece'; s.textContent = '📎 ' + pj; p.appendChild(s); } b.appendChild(p); }
